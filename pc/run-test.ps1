@@ -11,6 +11,8 @@
     full screen on the main monitor (Edge kiosk mode, separate profile), streams the desktop,
     runs gamepad.py to collect the readings, and prints a summary at the end.
 
+    -Audio also streams what the PC is playing (pc/audio.py) during a stream test.
+
     -AB makes the client alternate two display configurations every 10 seconds (see
     client/source/stream.c); with -Latency the summary is split by configuration.
 
@@ -33,7 +35,8 @@ param(
     [string]$Bitrate = "2M",
     [int]$PaceKbps = 0,
     [switch]$Latency,
-    [switch]$AB
+    [switch]$AB,
+    [switch]$Audio
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -65,6 +68,13 @@ try {
             -ArgumentList @("-u", (Join-Path $PSScriptRoot "gamepad.py"), "--log", $latencyLog) `
             -RedirectStandardOutput (Join-Path $outDir "gamepad-$stamp.txt") `
             -RedirectStandardError (Join-Path $outDir "gamepad-$stamp.err.txt")
+    }
+
+    if ($Audio -and $Mode -eq "stream") {
+        $helpers += Start-Process -FilePath $python -NoNewWindow -PassThru `
+            -ArgumentList @("-u", (Join-Path $PSScriptRoot "audio.py"), "--ip", $Ip) `
+            -RedirectStandardOutput (Join-Path $outDir "audio-$stamp.txt") `
+            -RedirectStandardError (Join-Path $outDir "audio-$stamp.err.txt")
     }
 
     $appArgs = @("-a", $Ip, "-s", $app, $Mode)

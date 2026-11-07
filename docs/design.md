@@ -132,3 +132,43 @@ Part of the PC share belongs to the measuring page itself (a browser takes one o
 refreshes to show what it draws); a full-screen game may skip some of those steps. The next
 real step would be 60 fps streaming, which halves the capture wait, but the Old 3DS needs
 14-22 ms per gameplay frame (decode + Y2R), above the 16.7 ms a 60 fps stream allows.
+
+## Audio
+
+**Capture:** `pc/audio.py` records what Windows is playing with WASAPI loopback, at the mix
+format of the output device (48 kHz stereo here), so nothing is resampled on the PC.
+
+**Codec: IMA ADPCM, decoded by the 3DS CPU.** The 3DS DSP can decode Nintendo's DSP-ADPCM in
+hardware, but encoding it well means searching the best predictor for every 14-sample block,
+too slow in Python for real time. IMA ADPCM is encoded by Python's `audioop` and decoded with
+a few integer operations per sample: about 1% of the Old 3DS CPU for 48 kHz stereo. PotatoStream
+decodes Opus, which competes with the video for the same CPU. Quality: 32.6 dB SNR on a
+synthetic test signal (`pc/tests/test_audio.py`).
+
+**Packets:** 10 ms each (508 bytes, 100 per second, about 410 kbps). Every packet carries the
+decoder state of both channels, so a lost packet only loses its own 10 ms. The C decoder is
+checked to be bit-exact with the Python reference.
+
+**Playback:** the network thread decodes each packet straight into one of 24 DSP wave buffers
+and queues it on an NDSP channel (polyphase resampling to the DSP's 32.7 kHz).
+
+**Jitter:** Wi-Fi delivers packets with gaps of 50 to 250 ms, but audio must not stop. Playback
+pauses until a minimum queue depth is reached, 40 ms at first. An underrun while packets keep
+arriving raises that minimum by 10 ms; 15 s without underruns lowers it again. A packet that
+would make the queue more than 40 ms deeper than the minimum is dropped instead, so the delay
+does not build up. The audio socket gets the same 64 KB receive buffer as the video: with
+the default 8-packet buffer, the first keyframe of a stream caused losses.
+
+5-minute game session:
+
+| | |
+| --- | --- |
+| Audio packets | 29,614, none lost |
+| Underruns | 8 (around Wi-Fi gaps of up to 258 ms) |
+| Dropped to limit delay | 76 (0.25 per second; each one is a faint 10 ms click) |
+| Average queue | 49 ms |
+
+Video spends about 25 ms inside the 3DS and audio about 50 ms in its queue, so sound trails
+the picture by roughly 25 ms, below what most people notice; the player did not notice any
+offset. Possible improvement: instead of dropping whole packets, play slightly faster when the
+queue is deep, which would remove the clicks.

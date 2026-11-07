@@ -1,18 +1,21 @@
 # OldCast
 
-Stream PC games to an **Old Nintendo 3DS** at 30 fps, and play them with the 3DS buttons.
+Stream PC games to an **Old Nintendo 3DS** at 30 fps, with sound, and play them with the
+3DS buttons.
 
 The Old 3DS (2011) has no hardware video decoder, and its 268 MHz ARM11 cannot decode
 H.264 in real time, which is why Moonlight-based clients struggle on it. MPEG-2 is far
 cheaper to decode: at 400x240 the Old 3DS decodes a gameplay frame in about 15 ms. This
-project pairs a small MPEG-2 receiver for the 3DS with a PC side built on ffmpeg and a
-virtual Xbox 360 controller.
+project pairs a small MPEG-2 and ADPCM receiver for the 3DS with a PC side built on ffmpeg,
+WASAPI audio capture and a virtual Xbox 360 controller.
 
-**Status:** working on a local network. Measured on an Old 3DS over 2.4 GHz Wi-Fi: 29-30 fps
-shown with gameplay, 106 ms from the PC clock to the 3DS (measured automatically over ~2,200
-frames, of which 81 ms happen on the PC), and a 7 ms round trip for button packets. Next
-steps: audio, play from outside the home network, a proper user interface. See
-[docs/design.md](docs/design.md) for the measurements and the reasoning behind each choice.
+**Status:** working on a local network. Measured on an Old 3DS over 2.4 GHz Wi-Fi during a
+5-minute game session: 30 fps shown, 2 damaged frames, no lost audio or button packets.
+Video takes 106 ms from the PC clock to the 3DS (measured automatically, 81 ms of it on the
+PC), button packets make the round trip in under 10 ms, and audio plays about 50 ms after
+it is captured. Next steps: a connection started from the 3DS with a user interface on both
+sides, then play from outside the home network. See [docs/design.md](docs/design.md) for the
+measurements and the reasoning behind each choice.
 
 ## How it works
 
@@ -21,20 +24,26 @@ PC                                                   Old 3DS
 screen ─ ddagrab ─ scale 400x240 ─ MPEG-2 2 Mbps ─┐
                                                    │ UDP 5004, MPEG-TS
                                                    └──► demux ─► libavcodec ─► Y2R ─► GPU ─► top screen
+sound ─ WASAPI loopback ─ IMA ADPCM 48 kHz ───────┐
+                                                   │ UDP 5006, 10 ms packets
+                                                   └──► ADPCM decode ─► DSP (NDSP) ─► speakers
 virtual Xbox 360 pad ◄─ gamepad.py ◄─ UDP 5005 ◄────── buttons, Circle Pad, touch (125 Hz)
 ```
 
 - `client/`: the 3DS application (C, libctru, citro2d, libavcodec).
-- `pc/`: PowerShell scripts around ffmpeg and a Python virtual gamepad (ViGEm).
+- `pc/`: PowerShell scripts around ffmpeg, the Python audio sender and the Python virtual
+  gamepad (ViGEm).
 
 ## Requirements
 
-**3DS:** any model with custom firmware (Luma3DS) and the Homebrew Launcher.
+**3DS:** any model with custom firmware (Luma3DS) and the Homebrew Launcher. For sound,
+`sdmc:/3ds/dspfirm.cdc` (dump it once with [DSP1](https://github.com/zoogie/DSP1)).
 
 **PC (Windows):**
 - [ffmpeg](https://ffmpeg.org/) 7.x on the `PATH` (uses `ddagrab`, Windows 8 or later).
 - [ViGEmBus](https://github.com/nefarius/ViGEmBus) driver. Sunshine installs it too.
-- Python 3.10+ with `vgamepad`.
+- Python 3.10 to 3.12 with the packages in `pc/requirements.txt` (the audio encoder uses
+  the `audioop` module, removed in Python 3.13).
 - To build the client: [devkitPro](https://devkitpro.org/wiki/Getting_Started) with the `3ds-dev` group.
 
 ## Build
@@ -64,7 +73,8 @@ powershell -ExecutionPolicy Bypass -File pc\play.ps1 -Ip 192.168.0.149
 ```
 
 `play.ps1` sends the client with `3dslink`, starts the virtual gamepad and streams the
-screen. Hold **SELECT+START** for one second on the 3DS to stop. Alternatively, copy
+screen and the sound (`-NoAudio` keeps the sound on the PC). Hold **SELECT+START** for one
+second on the 3DS to stop. Alternatively, copy
 `oldcast.3dsx` to `/3ds/` on the SD card, start it from the Homebrew Launcher, press
 **A**, and run `play.ps1 -NoLink`.
 
@@ -73,7 +83,7 @@ screen. Hold **SELECT+START** for one second on the 3DS to stop. Alternatively, 
 | 3DS | Xbox 360 |
 | --- | --- |
 | Circle Pad | left stick |
-| touch screen | right stick (the point you touch is the center) |
+| touch screen | right stick (the point you touch is the center; small drags turn slowly) |
 | A, B, X, Y | by position: bottom (B) is A, right (A) is B, left (Y) is X, top (X) is Y |
 | L, R | LT, RT |
 | D-pad, START | D-pad, START |
@@ -83,7 +93,8 @@ screen. Hold **SELECT+START** for one second on the 3DS to stop. Alternatively, 
 | SELECT + START (1 s) | stop streaming |
 
 The mapping lives in the tables at the top of [pc/gamepad.py](pc/gamepad.py).
-`--radius` changes the touch-stick sensitivity (default: 60 pixels for full deflection).
+`--radius` (default 90 pixels for full deflection) and `--curve` (default 1.8; 1 is linear)
+tune the touch-stick sensitivity.
 
 ## Measure
 
@@ -96,6 +107,8 @@ The mapping lives in the tables at the top of [pc/gamepad.py](pc/gamepad.py).
   each frame. Add `-AB` to compare the client's two display configurations in one session.
 - `pc\tools\pc_latency.py` measures the PC's share alone (capture, encoding, sending).
 
+- `pc\run-test.ps1 ... -Audio` also streams the PC's sound during a stream test.
+
 Metrics are also written to `/3ds/oldcast/metrics.csv` and shown on the bottom screen.
 
 ## Tests
@@ -103,7 +116,9 @@ Metrics are also written to `/3ds/oldcast/metrics.csv` and shown on the bottom s
 ```bash
 gcc -std=c11 -Wall -Iclient/source client/test/test_demux.c client/source/ts_demux.c -o test_demux
 gcc -std=c11 -Wall -Iclient/source client/test/test_probe.c client/source/latency_probe.c -o test_probe
-pc/.venv/Scripts/python.exe pc/tests/test_gamepad.py   # with pc/gamepad.py --radius 40 running
+gcc -std=c11 -Wall -Iclient/source client/test/test_adpcm.c client/source/adpcm.c -o test_adpcm
+pc/.venv/Scripts/python.exe pc/tests/test_audio.py test_adpcm.exe
+pc/.venv/Scripts/python.exe pc/tests/test_gamepad.py   # with pc/gamepad.py --radius 40 --curve 1 running
 ```
 
 ## Credits
@@ -114,5 +129,6 @@ pc/.venv/Scripts/python.exe pc/tests/test_gamepad.py   # with pc/gamepad.py --ra
   showed where Moonlight hits its limits. No code is shared with it.
 - devkitPro, libctru, citro2d and citro3d.
 - [vgamepad](https://github.com/yannbouteiller/vgamepad) and ViGEm for the virtual controller.
+- [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) for WASAPI loopback capture.
 
 Developed with the help of [Claude Code](https://claude.com/claude-code).

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "audio.h"
 #include "common.h"
 #include "decoder.h"
 #include "frame_queue.h"
@@ -47,7 +48,8 @@ static const char METRICS_HEADER[] =
     "t_s,udp_pkts,kbps,ts_lost,frames_rx,corrupt,decoded,shown,not_shown,dropped,"
     "late_jumps,overflows,dec_avg,dec_max,dec_over_budget,y2r_avg,y2r_max,draw_avg,draw_max,"
     "age_avg,age_max,q_avg,q_max,gap_max,no_pes_len,rx_errno,wakeups,eagain,revents,inputs,"
-    "rcvbuf_default,rcvbuf_now,rcvbuf_errno,rtt_ms,probes,late_ticks,variant\n";
+    "rcvbuf_default,rcvbuf_now,rcvbuf_errno,rtt_ms,probes,late_ticks,variant,"
+    "audio_pkts,audio_lost,audio_dropped,audio_underruns,audio_queue_ms,audio_target_ms\n";
 
 /** Measurements of the current one-second window. */
 typedef struct {
@@ -166,6 +168,12 @@ static void print_metrics(const Window *w, const Totals *now, const Totals *prev
     printf("jumps to I %lu  queue full %lu\x1b[K\n", now->jumps, now->overflows);
     printf("not drawn %lu  y2r errors %lu\x1b[K\n", w->not_shown, w->y2r_failed);
     printf("latency probes %lu/s\x1b[K\n", w->probes);
+    if (net_audio_enabled())
+        printf("audio %lu pkt  queue %lu/%lu ms  under %lu  drop %lu  lost %lu\x1b[K\n", g_audio_stats.packets,
+               g_audio_stats.queued_ms, g_audio_stats.target_ms, g_audio_stats.underruns, g_audio_stats.dropped,
+               g_audio_stats.lost);
+    else
+        printf("audio off\x1b[K\n");
     if (demux->no_length)
         printf("WARNING: sender lacks -omit_video_pes_length 0\x1b[K\n");
     if (g_net_stats.error)
@@ -184,7 +192,7 @@ static void log_metrics(const Window *w, const Totals *now, const Totals *prev, 
     snprintf(row, sizeof(row),
              "%.1f,%lu,%.0f,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
              "%.2f,%.2f,%lu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%lu,%lu,%lu,%ld,%lu,%lu,0x%lx,%lu,%d,%d,%d,"
-             "%lu,%lu,%lu,%u\n",
+             "%lu,%lu,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu\n",
              t_s, now->packets - prev->packets, kbps, now->lost - prev->lost, now->received - prev->received,
              now->corrupt - prev->corrupt, w->decoded, w->shown, w->not_shown, now->dropped - prev->dropped,
              now->jumps - prev->jumps, now->overflows - prev->overflows, timestat_avg_ms(&w->decode),
@@ -193,7 +201,8 @@ static void log_metrics(const Window *w, const Totals *now, const Totals *prev, 
              timestat_max_ms(&w->age), q_avg, w->queue_max, gap_max, demux->no_length, g_net_stats.error,
              g_net_stats.wakeups, g_net_stats.eagain, g_net_stats.revents, g_input_sent, rcvbuf->default_size,
              rcvbuf->final_size, rcvbuf->last_errno, g_input_rtt_ms, w->probes, g_net_stats.late_ticks,
-             variant_index);
+             variant_index, g_audio_stats.packets, g_audio_stats.lost, g_audio_stats.dropped,
+             g_audio_stats.underruns, g_audio_stats.queued_ms, g_audio_stats.target_ms);
     metrics_log_push(row);
 }
 

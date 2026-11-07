@@ -1,11 +1,12 @@
 /**
  * @file network.h
- * @brief The network thread: video reception and the input channel.
+ * @brief The network thread: video and audio reception, and the input channel.
  *
- * One thread owns every socket. It waits in poll() on the video and input sockets, but
- * never longer than the next input tick (INPUT_PERIOD_MS), so buttons are sampled and
- * sent on time. Video datagrams go through the TS demuxer into the frame queue; echoes
- * from the PC update the round-trip time. See input.h for why this is a single thread.
+ * One thread owns every socket. It waits in poll() on the video, audio and input sockets,
+ * but never longer than the next input tick (INPUT_PERIOD_MS), so buttons are sampled and
+ * sent on time. Video datagrams go through the TS demuxer into the frame queue, audio
+ * packets are decoded straight into DSP buffers (audio.h), and echoes from the PC update
+ * the round-trip time. See input.h for why this is a single thread.
  */
 #pragma once
 
@@ -44,6 +45,9 @@ extern NetStats g_net_stats;
  * @return false if a socket could not be created or bound (errno is set).
  */
 bool net_start(s32 prio, RcvBufInfo *rcvbuf);
+
+/** True if the audio socket is open (the DSP is available and the port could be bound). */
+bool net_audio_enabled(void);
 
 /** Stops the network thread and closes the sockets. */
 void net_stop(void);

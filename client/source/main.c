@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio.h"
 #include "bench.h"
 #include "common.h"
 #include "decoder.h"
@@ -78,6 +79,12 @@ int main(int argc, char **argv)
         printf("Initialization failed (network, video, decoder\nor memory).\nSTART: quit\n");
         wait_for_key();
     }
+    // Audio is optional. The DSP needs sdmc:/3ds/dspfirm.cdc, dumped with DSP1.
+    if (ok && !audio_init()) {
+        printf("No audio: sdmc:/3ds/dspfirm.cdc is missing.\nRun DSP1 once to create it.\n\nA: continue\n");
+        if (!wait_for_key())
+            ok = false;
+    }
 
     bool running = ok;
     if (running && argc > 1 && run_auto_mode(argc, argv))
@@ -102,6 +109,7 @@ int main(int argc, char **argv)
     }
 
     if (ok) {
+        audio_exit();
         fq_exit();
         dec_exit();
         vo_exit();

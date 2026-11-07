@@ -7,7 +7,8 @@ vgamepad package (pip install vgamepad).
 
 Default mapping (edit the tables below to change it):
     Circle Pad        -> left stick
-    touch screen      -> right stick; where the finger lands is the stick center
+    touch screen      -> right stick; where the finger lands is the stick center, and a
+                         response curve keeps small drags precise (see --radius, --curve)
     A B X Y           -> by physical position (the bottom 3DS button is Xbox A)
     L / R             -> LT / RT triggers
     SELECT tapped     -> BACK
@@ -72,6 +73,9 @@ BACK_PULSE_S = 0.08
 TIMEOUT_S = 0.3       # no packets for this long: release everything, so nothing stays stuck
 
 
+TOUCH_DEADZONE_PX = 2  # ignores the jitter of a resting finger
+
+
 def axis(value, maximum, deadzone=0.0):
     """Scales value to -1..1, with a deadzone around zero."""
     if abs(value) <= deadzone:
@@ -79,12 +83,28 @@ def axis(value, maximum, deadzone=0.0):
     return max(-1.0, min(1.0, value / maximum))
 
 
+def touch_stick(dx, dy, radius, curve):
+    """Turns a touch drag (pixels, Y up) into stick values, keeping its direction.
+
+    The drag length is scaled to 0..1 by `radius` and raised to `curve`: with a curve of 2,
+    half the radius gives a quarter of the stick, so small drags turn the camera slowly
+    and precisely while a full drag still reaches full speed.
+    """
+    length = (dx * dx + dy * dy) ** 0.5
+    if length <= TOUCH_DEADZONE_PX:
+        return 0.0, 0.0
+    scaled = min(1.0, length / radius)
+    factor = scaled ** curve / length
+    return dx * factor, dy * factor
+
+
 class Translator:
     """Applies one 3DS input state to the virtual controller."""
 
-    def __init__(self, pad, touch_radius, absolute_touch):
+    def __init__(self, pad, touch_radius, absolute_touch, touch_curve=1.0):
         self.pad = pad
         self.radius = touch_radius
+        self.curve = touch_curve
         self.absolute = absolute_touch
         self.anchor = None
         self.select_since = None
@@ -133,7 +153,7 @@ class Translator:
                     self.anchor = (tx, ty)
                 center = self.anchor
             # Screen Y grows downwards; stick Y grows upwards.
-            pad.right_joystick_float(axis(tx - center[0], self.radius), axis(center[1] - ty, self.radius))
+            pad.right_joystick_float(*touch_stick(tx - center[0], center[1] - ty, self.radius, self.curve))
         else:
             self.anchor = None
 
@@ -197,15 +217,18 @@ class LatencyStats:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=5005)
-    parser.add_argument("--radius", type=float, default=60.0,
-                        help="touch drag in pixels that moves the right stick fully (default 60)")
+    parser.add_argument("--radius", type=float, default=90.0,
+                        help="touch drag in pixels that moves the right stick fully (default 90)")
+    parser.add_argument("--curve", type=float, default=1.8,
+                        help="touch response curve: 1 is linear, higher is gentler near the center "
+                             "(default 1.8)")
     parser.add_argument("--absolute-touch", action="store_true",
                         help="use the center of the touch screen as the stick center")
     parser.add_argument("--log", help="CSV file for every latency reading")
     args = parser.parse_args()
 
     pad = vg.VX360Gamepad()
-    translator = Translator(pad, args.radius, args.absolute_touch)
+    translator = Translator(pad, args.radius, args.absolute_touch, args.curve)
     latency = LatencyStats(args.log)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

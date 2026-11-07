@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Starts a play session: virtual gamepad, 3DS client and screen streaming.
+    Starts a play session: virtual gamepad, 3DS client, screen and audio streaming.
 
 .DESCRIPTION
     1. On the 3DS: open the Homebrew Launcher and press Y (NetLoader).
@@ -10,14 +10,15 @@
     With -NoLink, start the client yourself from the Homebrew Launcher (A on its menu)
     and finish the session with Enter in this window.
 
-    Logs go to results\: gamepad-<time>.txt and, when using 3dslink, game-<time>.csv
-    with the client's metrics.
+    Logs go to results\: gamepad-<time>.txt, audio-<time>.txt and, when using 3dslink,
+    game-<time>.csv with the client's metrics. -NoAudio leaves the sound on the PC.
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Ip,
     [string]$Bitrate = "2M",
     [int]$Output = 0,
-    [switch]$NoLink
+    [switch]$NoLink,
+    [switch]$NoAudio
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -43,6 +44,13 @@ try {
             -RedirectStandardError (Join-Path $outDir "game-$stamp.3dslink.txt")
         $procs += $linkProc
         Start-Sleep -Seconds 8
+    }
+
+    if (-not $NoAudio) {
+        $procs += Start-Process -FilePath $python -NoNewWindow -PassThru `
+            -ArgumentList @("-u", (Join-Path $PSScriptRoot "audio.py"), "--ip", $Ip) `
+            -RedirectStandardOutput (Join-Path $outDir "audio-$stamp.txt") `
+            -RedirectStandardError (Join-Path $outDir "audio-$stamp.err.txt")
     }
 
     $streamArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "stream.ps1"),

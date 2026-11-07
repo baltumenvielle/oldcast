@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "audio.h"
 #include "common.h"
 #include "frame_queue.h"
 #include "input.h"
@@ -20,6 +21,7 @@
 NetStats g_net_stats;
 
 static int s_video_sock = -1;
+static int s_audio_sock = -1;
 static int s_input_sock = -1;
 static Thread s_thread;
 static volatile bool s_run;
@@ -89,20 +91,56 @@ static void read_video(void)
     }
 }
 
+/** Hands every audio packet waiting on the audio socket to the player. */
+static void read_audio(void)
+{
+    static u8 buf[UDP_BUF_SIZE] __attribute__((aligned(4)));
+    for (int i = 0; i < MAX_READS_PER_WAKEUP; i++) {
+        ssize_t got = recv(s_audio_sock, buf, sizeof(buf), 0);
+        if (got <= 0)
+            return;
+        audio_handle_packet(buf, (size_t)got);
+    }
+}
+
+/** Opens a non-blocking UDP socket bound to `port`. Returns -1 on failure. */
+static int open_udp(u16 port)
+{
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0)
+        return -1;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        int saved = errno;
+        close(sock);
+        errno = saved;
+        return -1;
+    }
+    fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
+    return sock;
+}
+
 static void net_thread(void *arg)
 {
     (void)arg;
     const u64 period = (u64)(INPUT_PERIOD_MS * CPU_TICKS_PER_MSEC);
     u64 next_tick = svcGetSystemTick();
-    struct pollfd fds[2] = {
+    // A negative fd is ignored by poll(), so audio simply drops out when it is disabled.
+    struct pollfd fds[3] = {
         {.fd = s_video_sock, .events = POLLIN},
         {.fd = s_input_sock, .events = POLLIN},
+        {.fd = s_audio_sock, .events = POLLIN},
     };
 
     while (s_run) {
         u64 now = svcGetSystemTick();
         if (now >= next_tick) {
             input_tick();
+            audio_tick();
             next_tick += period;
             if (next_tick <= now) {
                 g_net_stats.late_ticks++;
@@ -114,8 +152,8 @@ static void net_thread(void *arg)
         int timeout_ms = (int)((next_tick - now) / CPU_TICKS_PER_MSEC) + 1;
         if (timeout_ms > INPUT_PERIOD_MS)
             timeout_ms = INPUT_PERIOD_MS;
-        fds[0].revents = fds[1].revents = 0;
-        int ready = poll(fds, 2, timeout_ms);
+        fds[0].revents = fds[1].revents = fds[2].revents = 0;
+        int ready = poll(fds, 3, timeout_ms);
         if (ready < 0) {
             g_net_stats.error = errno;
             svcSleepThread(1000000LL);
@@ -132,6 +170,8 @@ static void net_thread(void *arg)
         }
         if (fds[1].revents)
             input_read_echoes();
+        if (fds[2].revents)
+            read_audio();
     }
 }
 
@@ -159,6 +199,18 @@ bool net_start(s32 prio, RcvBufInfo *rcvbuf)
     if (s_input_sock < 0)
         goto fail;
 
+    // Audio is optional: without the DSP firmware the stream works silently.
+    if (audio_available()) {
+        s_audio_sock = open_udp(AUDIO_PORT);
+        // The default 4416-byte buffer holds only 8 audio packets: a keyframe arriving at
+        // the same time kept the thread busy long enough to lose some of them.
+        if (s_audio_sock >= 0) {
+            RcvBufInfo audio_rcvbuf;
+            enlarge_receive_buffer(s_audio_sock, &audio_rcvbuf);
+        }
+        audio_reset();
+    }
+
     ts_demux_init(&s_demux, on_frame_begin, on_frame_end, NULL);
     s_run = true;
     s_thread = threadCreate(net_thread, NULL, NET_STACK_SIZE, prio, 0, false);
@@ -170,6 +222,9 @@ bool net_start(s32 prio, RcvBufInfo *rcvbuf)
 
 fail: {
     int saved = errno;
+    if (s_audio_sock >= 0)
+        close(s_audio_sock);
+    s_audio_sock = -1;
     input_close();
     s_input_sock = -1;
     close(s_video_sock);
@@ -189,10 +244,20 @@ void net_stop(void)
     }
     input_close();
     s_input_sock = -1;
+    if (s_audio_sock >= 0) {
+        close(s_audio_sock);
+        s_audio_sock = -1;
+    }
+    audio_reset();
     if (s_video_sock >= 0) {
         close(s_video_sock);
         s_video_sock = -1;
     }
+}
+
+bool net_audio_enabled(void)
+{
+    return s_audio_sock >= 0;
 }
 
 const TsDemux *net_demux(void)
