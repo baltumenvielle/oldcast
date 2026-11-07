@@ -71,7 +71,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        host.stop_session("the host was closed")
+        host.close()
 
 
 if __name__ == "__main__":

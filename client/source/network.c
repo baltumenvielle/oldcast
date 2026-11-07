@@ -14,6 +14,7 @@
 #include "discovery.h"
 #include "frame_queue.h"
 #include "input.h"
+#include "siphash.h"
 
 #define UDP_BUF_SIZE 2048
 #define NET_STACK_SIZE (32 * 1024)
@@ -22,16 +23,26 @@
 // No video for this long during an active session: ask for the session again. If the PC
 // ended it (or restarted), it answers with a new one; if it is still running, OCSA again.
 #define VIDEO_SILENCE_MS 3000
+// Routers forget a UDP mapping that sends nothing for a while: mobile carriers (CGNAT) after
+// 20-60 s. Video and audio only flow toward the 3DS, so both sockets send a small message
+// this often to keep their way in open.
+#define KEEPALIVE_MS 5000
 
+#define PROTOCOL_VERSION 2
+#define TAG_SIZE 8
+
+// Message layouts: see docs/protocol.md. Once paired, every message ends with a SipHash
+// signature made with the key the PC handed over on the local network.
 typedef struct __attribute__((packed)) {
     char magic[4]; // "OCSR"
     u8 version;
-    u8 reserved[3];
+    u8 flags; // bit 0: audio wanted, bit 1: signed with our key for this PC
+    u8 reserved[2];
     u8 client_id[8];
+    u64 nonce; // our clock in ms: the PC rejects any nonce it has already seen (replays)
     u16 pin;
     u16 bitrate_kbps;
-    u8 flags; // bit 0: audio wanted
-    u8 reserved2[3];
+    u8 reserved2[4];
     char name[16];
 } SessionRequestMsg;
 
@@ -40,10 +51,24 @@ typedef struct __attribute__((packed)) {
     u8 version;
     u8 reserved[3];
     u8 client_id[8];
+    u64 nonce;
 } ClientMsg;
 
-_Static_assert(sizeof(SessionRequestMsg) == 40, "OCSR is 40 bytes");
-_Static_assert(sizeof(ClientMsg) == 16, "OCAP/OCSE are 16 bytes");
+typedef struct __attribute__((packed)) {
+    char magic[4]; // "OCSA"
+    u8 version;
+    u8 flags; // bit 0: key included, bit 1: public address included
+    u8 reserved[2];
+    u8 host_id[8];
+    u32 public_ip; // network byte order
+    u16 public_port;
+    u8 reserved2[2];
+    u8 key[16];
+} SessionAcceptMsg;
+
+_Static_assert(sizeof(SessionRequestMsg) == 48, "OCSR is 48 bytes");
+_Static_assert(sizeof(ClientMsg) == 24, "OCAP/OCSE are 24 bytes");
+_Static_assert(sizeof(SessionAcceptMsg) == 40, "OCSA is 40 bytes");
 
 NetStats g_net_stats;
 
@@ -61,15 +86,32 @@ static volatile u8 s_deny_reason;
 static u64 s_next_request;
 static u64 s_next_punch;
 static volatile u64 s_last_video;
+static u64 s_next_keepalive;
+static SessionAccept s_accept;
+static volatile bool s_accept_new;
 
+/** Sends `msg` to the PC, followed by its signature when we hold a key for that PC. */
 static void send_to_host(int sock, const void *msg, size_t size)
 {
+    u8 buf[96];
+    memcpy(buf, msg, size);
+    if (s_request.has_key) {
+        u64 tag = siphash24(s_request.key, msg, size);
+        memcpy(buf + size, &tag, TAG_SIZE); // little-endian, as the PC expects
+        size += TAG_SIZE;
+    }
     struct sockaddr_in to;
     memset(&to, 0, sizeof(to));
     to.sin_family = AF_INET;
-    to.sin_port = htons(CONTROL_PORT);
+    to.sin_port = htons(s_request.host_port);
     to.sin_addr.s_addr = s_request.host_addr;
-    sendto(sock, msg, size, 0, (struct sockaddr *)&to, sizeof(to));
+    sendto(sock, buf, size, 0, (struct sockaddr *)&to, sizeof(to));
+}
+
+/** Our clock in ms since 1900, from the RTC: it keeps going forward across reboots. */
+static u64 nonce(void)
+{
+    return osGetTime();
 }
 
 static void send_client_msg(int sock, const char *magic)
@@ -77,8 +119,9 @@ static void send_client_msg(int sock, const char *magic)
     ClientMsg m;
     memset(&m, 0, sizeof(m));
     memcpy(m.magic, magic, 4);
-    m.version = 1;
+    m.version = PROTOCOL_VERSION;
     memcpy(m.client_id, client_id(), 8);
+    m.nonce = nonce();
     send_to_host(sock, &m, sizeof(m));
 }
 
@@ -91,11 +134,12 @@ static void send_session_request(void)
     SessionRequestMsg m;
     memset(&m, 0, sizeof(m));
     memcpy(m.magic, "OCSR", 4);
-    m.version = 1;
+    m.version = PROTOCOL_VERSION;
     memcpy(m.client_id, client_id(), 8);
+    m.nonce = nonce();
     m.pin = s_request.pin;
     m.bitrate_kbps = s_request.bitrate_kbps;
-    m.flags = s_request.audio ? 1 : 0;
+    m.flags = (s_request.audio ? 1 : 0) | (s_request.has_key ? 2 : 0);
     memcpy(m.name, s_request.name, sizeof(m.name));
     send_to_host(s_video_sock, &m, sizeof(m));
 }
@@ -103,9 +147,27 @@ static void send_session_request(void)
 /** Handles a control reply from the PC, which arrives on the video socket. */
 static void handle_reply(const u8 *data, size_t size, u32 from)
 {
-    if (!s_has_request || from != s_request.host_addr || size < 8 || data[4] != 1)
+    if (!s_has_request || from != s_request.host_addr || size < 8 || data[4] != PROTOCOL_VERSION)
         return;
-    if (memcmp(data, "OCSA", 4) == 0) {
+    if (memcmp(data, "OCSA", 4) == 0 && size >= sizeof(SessionAcceptMsg)) {
+        const SessionAcceptMsg *a = (const SessionAcceptMsg *)data;
+        if (s_state != SESSION_ACTIVE) {
+            memset(&s_accept, 0, sizeof(s_accept));
+            memcpy(s_accept.host_id, a->host_id, 8);
+            if (a->flags & 1) {
+                s_accept.has_key = true;
+                memcpy(s_accept.key, a->key, 16);
+                // Sign from now on: the input thread and the next messages use it.
+                memcpy(s_request.key, a->key, 16);
+                s_request.has_key = true;
+                input_set_key(s_request.key);
+            }
+            if (a->flags & 2) {
+                s_accept.public_addr = a->public_ip;
+                s_accept.public_port = a->public_port;
+            }
+            s_accept_new = true;
+        }
         s_state = SESSION_ACTIVE;
     } else if (memcmp(data, "OCPN", 4) == 0) {
         if (s_state != SESSION_ACTIVE)
@@ -137,6 +199,13 @@ static void session_tick(u64 now)
         now >= s_next_punch) {
         send_client_msg(s_audio_sock, "OCAP");
         s_next_punch = now + interval;
+    }
+    if (s_state == SESSION_ACTIVE && now >= s_next_keepalive) {
+        // OCAP also tells the PC the audio address again, in case the router changed it.
+        if (s_audio_sock >= 0 && s_request.audio)
+            send_client_msg(s_audio_sock, "OCAP");
+        send_client_msg(s_video_sock, "OCKA");
+        s_next_keepalive = now + (u64)(KEEPALIVE_MS * CPU_TICKS_PER_MSEC);
     }
 }
 
@@ -324,8 +393,13 @@ bool net_start(s32 prio, RcvBufInfo *rcvbuf, const SessionRequest *request)
     s_deny_reason = 0;
     if (request) {
         s_request = *request;
+        if (!s_request.host_port)
+            s_request.host_port = CONTROL_PORT;
+        input_set_key(s_request.has_key ? s_request.key : NULL);
+        s_accept_new = false;
         s_state = SESSION_REQUESTING;
         s_next_request = s_next_punch = 0;
+        s_next_keepalive = 0;
         s_last_video = 0;
         input_set_target(request->host_addr);
     }
@@ -390,6 +464,15 @@ void net_stop(void)
         close(s_video_sock);
         s_video_sock = -1;
     }
+}
+
+bool net_take_accept(SessionAccept *out)
+{
+    if (!s_accept_new)
+        return false;
+    *out = s_accept;
+    s_accept_new = false;
+    return true;
 }
 
 SessionState net_session_state(void)

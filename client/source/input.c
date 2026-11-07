@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "common.h"
+#include "siphash.h"
 
 #define INPUT_HEARTBEAT_MS 50 // send even without changes, so the PC knows we are alive
 #define EXIT_HOLD_MS 1000
@@ -16,7 +17,8 @@
 #define FLAG_PROBE 0x02 // probe_code holds a new latency probe reading
 
 /**
- * Packet sent to the PC, little-endian. Must match PACKET_V2 in pc/gamepad.py.
+ * Packet sent to the PC, little-endian. Must match PACKET_V2 in pc/oldcast/gamepad.py.
+ * In a signed session it is followed by its 8-byte SipHash signature (40 bytes in total).
  * Version 1 was the same without the last four fields (24 bytes).
  */
 typedef struct __attribute__((packed)) {
@@ -49,6 +51,8 @@ volatile u32 g_input_rtt_ms;
 
 static int s_sock = -1;
 static volatile u32 s_target;
+static bool s_signed;
+static u8 s_key[16];
 static volatile bool s_exit;
 static volatile u32 s_keys;
 
@@ -154,7 +158,15 @@ void input_tick(void)
     to.sin_family = AF_INET;
     to.sin_port = htons(INPUT_PORT);
     to.sin_addr.s_addr = target;
-    if (sendto(s_sock, pkt, sizeof(*pkt), 0, (struct sockaddr *)&to, sizeof(to)) >= 0)
+    u8 out[sizeof(InputPacket) + 8];
+    size_t size = sizeof(InputPacket);
+    memcpy(out, pkt, size);
+    if (s_signed) {
+        u64 tag = siphash24(s_key, pkt, sizeof(InputPacket));
+        memcpy(out + size, &tag, 8);
+        size += 8;
+    }
+    if (sendto(s_sock, out, size, 0, (struct sockaddr *)&to, sizeof(to)) >= 0)
         g_input_sent++;
     s_last = *pkt;
     s_last_send = now;
@@ -163,6 +175,13 @@ void input_tick(void)
 void input_set_target(u32 addr)
 {
     s_target = addr;
+}
+
+void input_set_key(const u8 *key)
+{
+    s_signed = key != NULL;
+    if (key)
+        memcpy(s_key, key, sizeof(s_key));
 }
 
 u32 input_keys_held(void)

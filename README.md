@@ -14,8 +14,9 @@ WASAPI audio capture and a virtual Xbox 360 controller.
 Video takes 106 ms from the PC clock to the 3DS (measured automatically, 81 ms of it on the
 PC), button packets make the round trip in under 10 ms, and audio plays about 50 ms after
 it is captured. The 3DS finds the PC on its own, pairs with a PIN the first time, and the
-PC has its own window, and the client installs as a CIA with its own HOME menu icon. Next
-steps: play from outside the home network, then a graphical interface on the 3DS. See [docs/design.md](docs/design.md) for the
+PC has its own window, and the client installs as a CIA with its own HOME menu icon. It
+also works from outside the home network (tested over a phone's mobile data), with every
+message from the 3DS signed. Next step: a graphical interface on the 3DS. See [docs/design.md](docs/design.md) for the
 measurements and the reasoning behind each choice.
 
 ## How it works
@@ -28,7 +29,7 @@ screen ─ ddagrab ─ scale 400x240 ─ MPEG-2 2 Mbps ─┐
 sound ─ WASAPI loopback ─ IMA ADPCM 48 kHz ───────┐
                                                    │ UDP 5006, 10 ms packets
                                                    └──► ADPCM decode ─► DSP (NDSP) ─► speakers
-virtual Xbox 360 pad ◄─ gamepad.py ◄─ UDP 5005 ◄────── buttons, Circle Pad, touch (125 Hz)
+virtual Xbox 360 pad ◄─ host ◄──────── UDP 5007 ◄────── buttons, Circle Pad, touch (125 Hz)
 ```
 
 - `client/`: the 3DS application (C, libctru, citro2d, libavcodec).
@@ -85,6 +86,16 @@ pc/.venv/Scripts/python.exe -m pip install -r pc/requirements.txt
 4. Bring the game to the foreground on the streamed monitor and play. Hold **SELECT+START**
    for one second on the 3DS to stop.
 
+### From outside your home
+
+The host asks the router (UPnP) to forward UDP port 5007 to the PC; its window shows whether
+that worked, and the option can be turned off there. If the router refuses, forward UDP 5007
+to the PC by hand. Pair the 3DS at home once: it then keeps a key and the PC's public
+address, and on any other network the PC appears in its list as "remote". Pairing is only
+possible on the local network, and the PC ignores anything from outside that is not signed
+with a paired console's key. This does not work if the internet provider of the PC uses
+CGNAT (no public address of its own).
+
 `pc\play.ps1 -Ip <3ds-ip>` still works for development: it sends the client with `3dslink`
 and pushes video and audio without a session (press **X** on the client's home screen to
 listen).
@@ -128,6 +139,7 @@ Metrics are also written to `/3ds/oldcast/metrics.csv` and shown on the bottom s
 gcc -std=c11 -Wall -Iclient/source client/test/test_demux.c client/source/ts_demux.c -o test_demux
 gcc -std=c11 -Wall -Iclient/source client/test/test_probe.c client/source/latency_probe.c -o test_probe
 gcc -std=c11 -Wall -Iclient/source client/test/test_adpcm.c client/source/adpcm.c -o test_adpcm
+gcc -std=c11 -Wall -Iclient/source client/test/test_siphash.c client/source/siphash.c -o test_siphash
 pc/.venv/Scripts/python.exe pc/tests/test_audio.py test_adpcm.exe
 pc/.venv/Scripts/python.exe pc/tests/test_gamepad.py   # with pc/gamepad.py --radius 40 --curve 1 running
 pc/.venv/Scripts/python.exe pc/tests/test_host.py      # with "python -m oldcast --no-window" running

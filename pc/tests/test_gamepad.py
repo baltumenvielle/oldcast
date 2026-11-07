@@ -1,7 +1,7 @@
 """End-to-end test of gamepad.py's mapping, without a 3DS.
 
 Start the translator first, then run this test. It sends fake 3DS packets to
-127.0.0.1:5005 and reads the virtual controller back through XInput, the same API games use.
+127.0.0.1:5007 and reads the virtual controller back through XInput, the same API games use.
 
     pc\\.venv\\Scripts\\python.exe pc\\gamepad.py --radius 40 --curve 1
     pc\\.venv\\Scripts\\python.exe pc\\tests\\test_gamepad.py
@@ -59,7 +59,7 @@ def send(keys=0, cx=0, cy=0, touch=None, repeat=3):
     tx, ty = touch or (0, 0)
     for _ in range(repeat):
         seq += 1
-        sock.sendto(PACKET.pack(b"3DSI", 1, 1 if touch else 0, seq, keys, cx, cy, tx, ty, 0), ("127.0.0.1", 5005))
+        sock.sendto(PACKET.pack(b"3DSI", 1, 1 if touch else 0, seq, keys, cx, cy, tx, ty, 0), ("127.0.0.1", 5007))
         time.sleep(0.01)
     time.sleep(0.05)
 
@@ -110,7 +110,7 @@ check("resting finger jitter is ignored", touch_stick(1, 1, 90, 1.8) == (0.0, 0.
 
 # Version 2 packets are echoed back to the sender with their seq and t_ms.
 sock.settimeout(1.0)
-sock.sendto(PACKET_V2.pack(b"3DSI", 2, 0, 777, 0, 0, 0, 0, 0, 123456, 0, 0, 0, 0, 0), ("127.0.0.1", 5005))
+sock.sendto(PACKET_V2.pack(b"3DSI", 2, 0, 777, 0, 0, 0, 0, 0, 123456, 0, 0, 0, 0, 0), ("127.0.0.1", 5007))
 try:
     magic, seq_back, t_back = ECHO.unpack(sock.recvfrom(64)[0])
     check("v2 packet is echoed", magic == b"3DSE" and seq_back == 777 and t_back == 123456)

@@ -4,7 +4,9 @@ The encoding choices are explained in docs/design.md; in short, everything is tu
 latency on a 268 MHz ARM11 decoder.
 """
 import shutil
+import socket
 import subprocess
+import threading
 
 
 def ffmpeg_command(ip, port, bitrate_kbps=2000, monitor=0, test_pattern=False):
@@ -25,23 +27,45 @@ def ffmpeg_command(ip, port, bitrate_kbps=2000, monitor=0, test_pattern=False):
 
 
 class VideoSender:
-    """Runs ffmpeg for one session."""
+    """Runs ffmpeg for a session and relays its output to the 3DS.
 
-    def __init__(self, report=print):
+    ffmpeg sends to a socket on 127.0.0.1, and a relay thread forwards every datagram with
+    `send(data, address)`, which the host points at its port 5007 socket. That way video
+    leaves from the same port as everything else (see host.py). The relay costs well under
+    a millisecond per frame.
+    """
+
+    def __init__(self, send, report=print):
+        self.send = send
         self.report = report
         self.process = None
+        self.target = None
+        self.relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.relay.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+        self.relay.bind(("127.0.0.1", 0))
+        threading.Thread(target=self._relay, daemon=True).start()
+
+    def _relay(self):
+        while True:
+            data = self.relay.recv(2048)
+            target = self.target
+            if target:
+                self.send(data, target)
 
     @staticmethod
     def available():
         return shutil.which("ffmpeg") is not None
 
-    def start(self, ip, port, bitrate_kbps, monitor=0, test_pattern=False):
+    def start(self, target, bitrate_kbps, monitor=0, test_pattern=False):
+        """Streams to `target`, the (ip, port) the 3DS sent its session request from."""
         self.stop()
+        self.target = target
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        self.process = subprocess.Popen(ffmpeg_command(ip, port, bitrate_kbps, monitor, test_pattern),
+        local = self.relay.getsockname()
+        self.process = subprocess.Popen(ffmpeg_command(local[0], local[1], bitrate_kbps, monitor, test_pattern),
                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.PIPE, creationflags=flags)
-        self.report(f"Streaming monitor {monitor} to {ip}:{port} at {bitrate_kbps} kbps")
+        self.report(f"Streaming monitor {monitor} to {target[0]}:{target[1]} at {bitrate_kbps} kbps")
 
     def running(self):
         return self.process is not None and self.process.poll() is None
@@ -60,3 +84,4 @@ class VideoSender:
             except subprocess.TimeoutExpired:
                 self.process.kill()
         self.process = None
+        self.target = None

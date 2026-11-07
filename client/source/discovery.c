@@ -100,7 +100,7 @@ static void send_query(u32 addr)
     DiscoveryQuery q;
     memset(&q, 0, sizeof(q));
     memcpy(q.magic, "OCDQ", 4);
-    q.version = 1;
+    q.version = 2;
     memcpy(q.client_id, client_id(), sizeof(q.client_id));
 
     struct sockaddr_in to;
@@ -123,6 +123,7 @@ static void remember(u32 addr, const DiscoveryAnswer *a, u64 now)
         entry = &s_hosts[s_count++];
     }
     entry->addr = addr;
+    entry->port = CONTROL_PORT;
     memcpy(entry->host_id, a->host_id, 8);
     memcpy(entry->name, a->name, 32);
     entry->name[32] = 0;
@@ -147,7 +148,7 @@ void discovery_poll(void)
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     while (recvfrom(s_sock, &a, sizeof(a), 0, (struct sockaddr *)&from, &from_len) == (ssize_t)sizeof(a)) {
-        if (memcmp(a.magic, "OCDA", 4) == 0 && a.version == 1)
+        if (memcmp(a.magic, "OCDA", 4) == 0 && a.version == 2)
             remember(from.sin_addr.s_addr, &a, now);
         from_len = sizeof(from);
     }

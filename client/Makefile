@@ -31,8 +31,8 @@ BANNERTOOL		?=	$(TOOLS)/bannertool
 APP_PRODUCT_CODE	:=	CTR-P-OCST
 APP_UNIQUE_ID	:=	0xFCA57
 VERSION_MAJOR	:=	0
-VERSION_MINOR	:=	3
-VERSION_MICRO	:=	0
+VERSION_MINOR	:=	4
+VERSION_MICRO	:=	1
 
 # libavcodec/libavutil built by scripts/build-ffmpeg.sh
 FFMPEG_DIR	:=	$(CURDIR)/third_party/ffmpeg

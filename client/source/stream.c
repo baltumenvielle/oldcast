@@ -10,6 +10,7 @@
 #include "common.h"
 #include "decoder.h"
 #include "frame_queue.h"
+#include "hosts.h"
 #include "input.h"
 #include "latency_probe.h"
 #include "metrics_log.h"
@@ -104,8 +105,23 @@ static bool show_session_state(const StreamOptions *options, SessionState *shown
 
     if (state == SESSION_DENIED) {
         snprintf(line, sizeof(line), "%s", host);
-        vo_show_status(net_session_deny_reason() == 1 ? "This PC is busy" : "Pairing was rejected", line,
-                       net_session_deny_reason() == 1 ? "It is streaming to another 3DS." : "Press B to go back");
+        switch (net_session_deny_reason()) {
+        case 1:
+            vo_show_status("This PC is busy", line, "It is streaming to another 3DS.  B: back");
+            break;
+        case 3:
+            vo_show_status("Pair this 3DS at home first", line,
+                           "Connect once on the PC's network to pair.  B: back");
+            break;
+        case 4:
+            // The PC forgot us (unpaired or reinstalled): drop our key, pair again next time.
+            hosts_forget_key(options->session->host_id);
+            vo_show_status("This PC no longer knows this 3DS", line, "Connect again to pair.  B: back");
+            break;
+        default:
+            vo_show_status("Pairing was rejected", line, "B: back");
+            break;
+        }
         while (aptMainLoop() && !(input_keys_held() & KEY_B))
             svcSleepThread(50 * 1000000LL);
         return false;
@@ -115,6 +131,30 @@ static bool show_session_state(const StreamOptions *options, SessionState *shown
     if (state == *shown)
         return true;
     *shown = state;
+
+    // Save what the PC sent when it accepted: the pairing key, and its public address.
+    SessionAccept accept;
+    if (net_take_accept(&accept)) {
+        const SavedHost *old = hosts_find(accept.host_id);
+        SavedHost saved;
+        if (old)
+            saved = *old;
+        else
+            memset(&saved, 0, sizeof(saved));
+        memcpy(saved.host_id, accept.host_id, 8);
+        snprintf(saved.name, sizeof(saved.name), "%s", host);
+        if (accept.has_key) {
+            saved.has_key = true;
+            memcpy(saved.key, accept.key, sizeof(saved.key));
+        }
+        if (accept.public_addr) {
+            // The PC only reports its public address on its own network.
+            saved.lan_addr = options->session->host_addr;
+            saved.public_addr = accept.public_addr;
+            saved.public_port = accept.public_port;
+        }
+        hosts_save(&saved);
+    }
 
     switch (state) {
     case SESSION_REQUESTING:

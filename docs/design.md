@@ -144,6 +144,18 @@ the 3DS, if video stops for 1.5 s the screen says "Reconnecting...", and after 3
 client asks for the session again, so a session the PC had ended restarts by itself. In a
 session where the game switched modes twice, both restarts went unnoticed by the player.
 
+## Playing from outside the home network
+
+The PC uses one UDP port, 5007, for everything (control, input, and the video and audio it
+sends), so only one port has to be opened on the home router, which the host does with UPnP.
+ffmpeg sends to a local socket and the host relays its output from port 5007. The 3DS opens
+each flow itself (session request from its video socket, `OCAP` from its audio socket), and
+the PC answers each to the address it came from, which works behind any router on the 3DS
+side, including a phone's mobile data. First test over mobile data with weak signal: video
+was fluid, the session was signed end to end, but audio stopped after a while and never
+came back. Mobile carriers drop UDP mappings that only receive; the 3DS now sends a small
+keepalive from both sockets every 5 seconds, and the PC follows any change of port.
+
 ## Audio
 
 **Capture:** `pc/audio.py` records what Windows is playing with WASAPI loopback, at the mix

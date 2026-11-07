@@ -29,6 +29,7 @@
 #include "decoder.h"
 #include "discovery.h"
 #include "frame_queue.h"
+#include "hosts.h"
 #include "network.h"
 #include "stream.h"
 #include "video_out.h"
@@ -51,12 +52,50 @@ static void console_name(char *out, size_t size)
     cfguExit();
 }
 
+/**
+ * The home list: PCs found on this network, then saved PCs that are not here but can be
+ * reached at the public address they reported (marked HOST_REMOTE).
+ */
+static int build_list(HostEntry *out, int max)
+{
+    const HostEntry *found;
+    int count = discovery_hosts(&found);
+    if (count > max)
+        count = max;
+    memcpy(out, found, count * sizeof(HostEntry));
+
+    for (int i = 0; i < hosts_count() && count < max; i++) {
+        const SavedHost *saved = hosts_get(i);
+        bool here = false;
+        for (int j = 0; j < count; j++)
+            if (memcmp(out[j].host_id, saved->host_id, 8) == 0)
+                here = true;
+        if (here || !saved->public_addr || !saved->has_key)
+            continue;
+        HostEntry *e = &out[count++];
+        memset(e, 0, sizeof(*e));
+        e->addr = saved->public_addr;
+        e->port = saved->public_port;
+        memcpy(e->host_id, saved->host_id, 8);
+        memcpy(e->name, saved->name, sizeof(e->name));
+        e->flags = HOST_REMOTE;
+    }
+    return count;
+}
+
 /** Connects to `host` and streams until the user stops. Returns false to quit the app. */
 static bool connect_to(const HostEntry *host, u32 seconds)
 {
     SessionRequest request;
     memset(&request, 0, sizeof(request));
     request.host_addr = host->addr;
+    request.host_port = host->port;
+    memcpy(request.host_id, host->host_id, 8);
+    const SavedHost *saved = hosts_find(host->host_id);
+    if (saved && saved->has_key) {
+        request.has_key = true;
+        memcpy(request.key, saved->key, sizeof(request.key));
+    }
     request.pin = (u16)(1000 + svcGetSystemTick() % 9000);
     request.audio = audio_available();
     console_name(request.name, sizeof(request.name));
@@ -77,7 +116,10 @@ static void draw_home_list(const HostEntry *hosts, int count, int cursor)
     for (int i = 0; i < MAX_HOSTS; i++) {
         if (i < count) {
             struct in_addr a = {.s_addr = hosts[i].addr};
-            const char *tag = (hosts[i].flags & 2) ? "busy" : (hosts[i].flags & 1) ? "paired" : "new";
+            const char *tag = (hosts[i].flags & HOST_REMOTE) ? "remote"
+                              : (hosts[i].flags & 2)         ? "busy"
+                              : (hosts[i].flags & 1)         ? "paired"
+                                                             : "new";
             printf("%s %-18.18s %-6s\x1b[K\n", i == cursor ? ">" : " ", hosts[i].name, tag);
             printf("    %s\x1b[K\n", inet_ntoa(a));
         } else {
@@ -102,8 +144,8 @@ static bool run_home(void)
     bool keep_app = true;
     while (aptMainLoop()) {
         discovery_poll();
-        const HostEntry *hosts;
-        int count = discovery_hosts(&hosts);
+        HostEntry hosts[MAX_HOSTS];
+        int count = build_list(hosts, MAX_HOSTS);
         if (cursor >= count)
             cursor = count ? count - 1 : 0;
 

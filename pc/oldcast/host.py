@@ -1,5 +1,11 @@
 """Session logic of the OldCast host: discovery, pairing and streaming (docs/protocol.md).
 
+Everything goes through one UDP socket on port 5007: discovery and session messages and
+input packets arrive there, and the video, the audio and the input echoes leave from it.
+With a single port only one has to be opened on the router to play from outside the home
+network, and every flow leaves from the address the 3DS sent to, which routers on the
+3DS side expect.
+
 Everything the user interface shows comes from Host.snapshot(), and everything it can do
 goes through the public methods of Host.
 """
@@ -10,19 +16,23 @@ import threading
 import time
 from collections import deque
 
-from . import protocol
+from . import protocol, siphash
 from .audio import AudioSender
-from .gamepad import GamepadServer
+from .gamepad import Gamepad
+from .upnp import PortMapper
 from .video import VideoSender
 
 SESSION_TIMEOUT_S = 3.0  # no input packets for this long ends the session
 STARTUP_GRACE_S = 6.0    # the 3DS needs a moment to start sending input after OCSA
 DENY_MEMORY_S = 30.0     # a rejected 3DS is answered OCSD for this long
 # ffmpeg stops when Windows takes the screen capture away (a game switching to or from full
-# screen, a resolution change, a UAC prompt: DXGI_ERROR_ACCESS_LOST) or when a send fails
-# with WSAENOBUFS. Both are transient, so it is restarted; only repeated failures end the session.
-RESTART_LIMIT = 5        # restarts allowed within RESTART_WINDOW_S
-RESTART_WINDOW_S = 30.0
+# screen, a resolution change: DXGI_ERROR_ACCESS_LOST) and cannot capture at all while the
+# secure desktop is shown (a UAC prompt, the lock screen: "access denied"). Both are
+# transient, so ffmpeg is restarted, waiting longer after each failure so that a prompt of
+# several seconds does not use up the attempts. Only repeated failures end the session.
+RESTART_LIMIT = 8        # restarts allowed within RESTART_WINDOW_S
+RESTART_WINDOW_S = 60.0
+RESTART_DELAYS_S = (0.5, 1.0, 2.0, 4.0)  # wait before the 1st, 2nd, 3rd and later restarts
 
 DEFAULT_SETTINGS = {
     "name": socket.gethostname(),
@@ -31,6 +41,7 @@ DEFAULT_SETTINGS = {
     "audio": True,
     "touch_radius": 90.0,
     "touch_curve": 1.8,
+    "remote_play": True,   # open the host port on the router with UPnP
 }
 
 
@@ -70,21 +81,29 @@ class Host:
         self.denied = {}      # client id hex -> time of the rejection
         self.session = None   # active session: dict
 
-        self.video = VideoSender(report=self.report)
-        self.audio = AudioSender(report=self.report)
-        self.gamepad = GamepadServer(radius=self.settings.data["touch_radius"],
-                                     curve=self.settings.data["touch_curve"], report=self.report)
-        self.gamepad.allowed_ip = ""  # no session: the controller ignores every packet
-
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Video bursts go out through this socket; a large send buffer avoids WSAENOBUFS.
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
         self.sock.bind(("0.0.0.0", protocol.CONTROL_PORT))
-        self.sock.settimeout(0.5)
+        self.sock.settimeout(0.05)
+
+        self.video = VideoSender(self._send, report=self.report)
+        self.audio = AudioSender(self._send, report=self.report)
+        # Input statistics every 5 s would bury the events in the log: keep only the last line.
+        self.input_stats = None
+        self.gamepad = Gamepad(radius=self.settings.data["touch_radius"],
+                               curve=self.settings.data["touch_curve"], report=self.report,
+                               stats=lambda line: setattr(self, "input_stats", line))
+        self.gamepad.allowed_ip = ""  # no session: the controller ignores every packet
+        self.router = PortMapper(protocol.CONTROL_PORT, report=self.report)
 
     # --- lifecycle ---------------------------------------------------------------------
 
     def start(self):
-        self.gamepad.start()
         threading.Thread(target=self._control_loop, daemon=True).start()
+        if self.settings.data["remote_play"]:
+            self.router.start()
         self.report(f"Host '{self.settings.data['name']}' ready on UDP {protocol.CONTROL_PORT}")
         if not VideoSender.available():
             self.report("ffmpeg was not found: install it and add it to the PATH")
@@ -95,28 +114,96 @@ class Host:
             self.log.append(line)
             print(line, flush=True)
 
-    # --- control port --------------------------------------------------------------------
+    def _send(self, data, address):
+        """Sends from the host port. Used by the video relay and the audio sender too."""
+        try:
+            self.sock.sendto(data, address)
+        except OSError:
+            pass  # a full buffer or an unreachable 3DS: the stream recovers by itself
+
+    # --- the host port -------------------------------------------------------------------
 
     def _control_loop(self):
         while True:
             try:
                 data, address = self.sock.recvfrom(2048)
-            except socket.timeout:
+            except (socket.timeout, OSError):
+                # OSError: Windows reports an ICMP "port unreachable" from an earlier send here.
+                data = None
+            now = time.monotonic()
+            if data and data[:4] == b"3DSI":
+                packet = self._check_input(data)
+                echo = self.gamepad.handle(packet, address, now) if packet else None
+                if echo:
+                    self._send(echo, address)  # right away, so the 3DS measures the network
+                data = None
+            self.gamepad.tick(now)
+            if not data:
                 self._check_session()
                 continue
-            except OSError:
-                continue
-            magic, fields = protocol.parse(data)
+            magic, fields, body, signature = protocol.parse(data)
             with self.lock:
                 if magic == b"OCDQ":
                     self._answer_discovery(fields, address)
                 elif magic == b"OCSR":
-                    self._handle_request(fields, address)
-                elif magic == b"OCAP":
-                    self._handle_audio_punch(fields, address)
-                elif magic == b"OCSE":
-                    self._handle_end(fields)
+                    self._handle_request(fields, address, body, signature)
+                elif magic in (b"OCAP", b"OCSE", b"OCKA") and self._session_message_ok(fields, body, signature):
+                    if magic == b"OCAP":
+                        self._handle_audio_punch(address)
+                    elif magic == b"OCKA":
+                        self._follow_video_address(address)
+                    else:
+                        self.stop_session("the 3DS ended it")
             self._check_session()
+
+    # --- authentication ------------------------------------------------------------------
+
+    def _check_input(self, data):
+        """Returns the input packet without its signature if it may drive the controller."""
+        session = self.session
+        if not session:
+            return None
+        if session["key"]:
+            # Signed sessions only accept signed input: 32-byte packet + 8-byte signature.
+            if len(data) == 40 and siphash.verify(session["key"], data):
+                return data[:32]
+            return None
+        return data
+
+    def _verify(self, client, body, signature, nonce, persist=True):
+        """Checks a signed message from a paired 3DS.
+
+        Returns "ok", "bad" (no key or wrong signature) or "replay" (valid signature, but a
+        nonce already seen: the 3DS clock in ms only goes forward, a replay carries an old one).
+        Session requests store the nonce on disk, so replays fail even after a restart; the
+        messages repeated every few seconds during a session keep it in memory only.
+        """
+        entry = self.paired.data.get(client)
+        if not entry or not entry.get("key") or signature is None:
+            return "bad"
+        if not siphash.verify(bytes.fromhex(entry["key"]), body + signature):
+            return "bad"
+        if nonce <= entry.get("nonce", 0):
+            return "replay"
+        entry["nonce"] = nonce
+        if persist:
+            self.paired.save()
+        return "ok"
+
+    def _session_message_ok(self, fields, body, signature):
+        session = self.session
+        if not session or session["client"] != fields["client_id"].hex():
+            return False
+        if session["key"]:
+            return self._verify(session["client"], body, signature, fields["nonce"], persist=False) == "ok"
+        return True
+
+    def _follow_video_address(self, address):
+        """A router may move the 3DS to another public port: keep sending video where it is."""
+        if self.session["video"] != address:
+            self.session["video"] = address
+            self.video.target = address
+            self.report(f"Video now to {address[0]}:{address[1]}")
 
     def _answer_discovery(self, fields, address):
         client = fields["client_id"].hex()
@@ -130,8 +217,22 @@ class Host:
     def _reply(self, magic, address, reason=0):
         self.sock.sendto(protocol.session_reply(magic, reason), address)
 
-    def _handle_request(self, fields, address):
+    def _handle_request(self, fields, address, body, signature):
         client = fields["client_id"].hex()
+        local = protocol.is_local(address[0])
+        if signature is not None:
+            verdict = self._verify(client, body, signature, fields["nonce"])
+            if verdict != "ok":
+                # A replay, or a bad signature from outside, gets no answer at all. A bad
+                # signature at home usually means the PC forgot this 3DS: tell it to pair again.
+                if verdict == "bad" and local:
+                    self._reply(b"OCSD", address, protocol.DENIED_BAD_KEY)
+                return
+        elif not local:
+            self._reply(b"OCSD", address, protocol.DENIED_PAIR_AT_HOME)
+            return
+        signed = signature is not None
+
         if self.session and self.session["client"] != client:
             self._reply(b"OCSD", address, protocol.DENIED_BUSY)
             return
@@ -147,35 +248,43 @@ class Host:
             self._reply(b"OCPN", address)
             return
 
-        # Paired: start (or keep) the session. The 3DS repeats OCSR until it gets OCSA.
+        # Paired. An unsigned request (local network only) means the 3DS has no key yet:
+        # it gets one with the answer. The 3DS repeats OCSR until it gets OCSA.
+        entry = self.paired.data[client]
+        if not entry.get("key"):
+            entry["key"] = os.urandom(protocol.KEY_SIZE).hex()
+            self.paired.save()
         if not self.session:
-            self._start_session(client, fields, address)
-        self._reply(b"OCSA", address)
+            self._start_session(client, fields, address, signed)
+        elif self.session["video"] != address:
+            self._follow_video_address(address)
+        key = None if signed else bytes.fromhex(entry["key"])
+        public = self.router.public if local else None
+        self.sock.sendto(protocol.session_accept(self.host_id, key, public), address)
 
-    def _start_session(self, client, fields, address):
+    def _start_session(self, client, fields, address, signed):
         settings = self.settings.data
         bitrate = fields["bitrate_kbps"] or settings["bitrate_kbps"]
+        key = bytes.fromhex(self.paired.data[client]["key"]) if signed else None
         self.session = {"client": client, "name": fields["name"], "video": address, "audio": None,
-                        "started": time.monotonic(), "bitrate_kbps": bitrate, "restarts": []}
+                        "started": time.monotonic(), "bitrate_kbps": bitrate, "restarts": [],
+                        "key": key, "remote": not protocol.is_local(address[0]), "retry_at": None}
         self.paired.data[client]["name"] = fields["name"]
         self.paired.save()
         self.gamepad.allowed_ip = address[0]
         self.gamepad.last_packet = None
-        self.video.start(address[0], address[1], bitrate, settings["monitor"])
+        self.video.start(address, bitrate, settings["monitor"])
         if settings["audio"] and fields["audio"]:
             self.audio.start()
-        self.report(f"Session started with '{fields['name']}' ({address[0]})")
+        where = "from outside the home network" if self.session["remote"] else "on the local network"
+        security = "signed" if key else "unsigned (receiving its key)"
+        self.report(f"Session started with '{fields['name']}' ({address[0]}, {where}, {security})")
 
-    def _handle_audio_punch(self, fields, address):
-        if self.session and self.session["client"] == fields["client_id"].hex():
-            if self.session["audio"] != address:
-                self.session["audio"] = address
-                self.audio.target = address
-                self.report(f"Audio to {address[0]}:{address[1]}")
-
-    def _handle_end(self, fields):
-        if self.session and self.session["client"] == fields["client_id"].hex():
-            self.stop_session("the 3DS ended it")
+    def _handle_audio_punch(self, address):
+        if self.session["audio"] != address:
+            self.session["audio"] = address
+            self.audio.target = address
+            self.report(f"Audio to {address[0]}:{address[1]}")
 
     def _check_session(self):
         with self.lock:
@@ -186,16 +295,21 @@ class Host:
             if now - self.session["started"] > STARTUP_GRACE_S and (last is None or now - last > SESSION_TIMEOUT_S):
                 self.stop_session("no input from the 3DS for 3 seconds")
             elif not self.video.running():
-                error = self.video.error() or "no error message"
-                restarts = [t for t in self.session["restarts"] if now - t < RESTART_WINDOW_S]
-                if len(restarts) >= RESTART_LIMIT:
-                    self.stop_session(f"ffmpeg kept stopping: {error}")
-                    return
-                restarts.append(now)
-                self.session["restarts"] = restarts
-                self.report(f"ffmpeg stopped ({error.splitlines()[0]}); restarting")
-                address = self.session["video"]
-                self.video.start(address[0], address[1], self.session["bitrate_kbps"], self.settings.data["monitor"])
+                session = self.session
+                if session["retry_at"] is None:
+                    error = self.video.error() or "no error message"
+                    restarts = [t for t in session["restarts"] if now - t < RESTART_WINDOW_S]
+                    if len(restarts) >= RESTART_LIMIT:
+                        self.stop_session(f"ffmpeg kept stopping: {error}")
+                        return
+                    delay = RESTART_DELAYS_S[min(len(restarts), len(RESTART_DELAYS_S) - 1)]
+                    restarts.append(now)
+                    session["restarts"] = restarts
+                    session["retry_at"] = now + delay
+                    self.report(f"ffmpeg stopped ({error.splitlines()[0]}); restarting in {delay:g} s")
+                elif now >= session["retry_at"]:
+                    session["retry_at"] = None
+                    self.video.start(session["video"], session["bitrate_kbps"], self.settings.data["monitor"])
 
     # --- actions from the user interface -------------------------------------------------
 
@@ -241,6 +355,16 @@ class Host:
                     self.settings.data[key] = allowed[key](value)
             self.settings.save()
             self.gamepad.set_sensitivity(self.settings.data["touch_radius"], self.settings.data["touch_curve"])
+            if "remote_play" in changes:
+                if self.settings.data["remote_play"]:
+                    self.router.start()
+                else:
+                    self.router.stop()
+
+    def close(self):
+        """Stops streaming and closes the router port."""
+        self.stop_session("the host was closed")
+        self.router.stop()
 
     # --- state for the user interface ----------------------------------------------------
 
@@ -259,6 +383,9 @@ class Host:
                     "audio_packets": self.audio.packets,
                     "input_age_ms": None if last is None else round((now - last) * 1000),
                     "rtt_ms": self.gamepad.rtt_ms,
+                    "remote": self.session["remote"],
+                    "input_stats": self.input_stats,
+                    "signed": self.session["key"] is not None,
                 }
             pending = None
             if self.pending and now - self.pending["since"] < 10:
@@ -266,9 +393,12 @@ class Host:
             return {
                 "host": {"name": self.settings.data["name"], "id": self.host_id.hex(),
                          "ffmpeg": VideoSender.available()},
+                "remote": {"state": self.router.state, "error": self.router.error,
+                           "public": f"{self.router.public[0]}:{self.router.public[1]}" if self.router.public else None},
                 "session": session,
                 "pending": pending,
-                "paired": [{"id": k, **v} for k, v in self.paired.data.items()],
+                "paired": [{"id": k, "name": v.get("name"), "since": v.get("since")}
+                           for k, v in self.paired.data.items()],
                 "settings": self.settings.data,
                 "log": list(self.log)[-40:],
             }

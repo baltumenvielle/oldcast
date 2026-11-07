@@ -1,8 +1,8 @@
-"""Turns the 3DS buttons (UDP port 5005) into a virtual Xbox 360 controller (ViGEm).
+"""Turns the 3DS buttons (UDP port 5007) into a virtual Xbox 360 controller (ViGEm).
 
     pc\\.venv\\Scripts\\python.exe pc\\gamepad.py
 
-The host (pc/oldcast/app.py) runs the same GamepadServer as part of a session.
+The host (pc/oldcast/app.py) uses the same Gamepad class for its sessions.
 
 Requires the ViGEmBus driver (installed by Sunshine, or from its own installer) and the
 vgamepad package (pip install vgamepad).
@@ -27,7 +27,6 @@ import argparse
 import csv
 import socket
 import struct
-import threading
 import time
 
 import vgamepad as vg
@@ -217,15 +216,20 @@ class LatencyStats:
         return "  ".join(parts)
 
 
-class GamepadServer:
-    """Receives 3DS input packets on a UDP port and drives the virtual controller.
+class Gamepad:
+    """Turns 3DS input packets into virtual controller state.
 
-    Runs in a background thread. `allowed_ip` restricts input to the 3DS of the current
-    session: None accepts any sender, and an empty string accepts nobody. `last_packet` tells the host when the 3DS was last
-    heard from, which is how a session is kept alive.
+    Has no socket of its own: the host hands it every input packet that arrives on its
+    single UDP port (5007), and sends back the echo that handle() returns. `allowed_ip`
+    restricts input to the 3DS of the current session: None accepts any sender, and an
+    empty string accepts nobody. `last_packet` tells the host when the 3DS was last heard
+    from, which is how a session is kept alive. Call tick() regularly: it releases the
+    controller when packets stop and reports statistics every few seconds.
     """
 
-    def __init__(self, port=5005, radius=90.0, curve=1.8, absolute_touch=False, log_path=None, report=print):
+    def __init__(self, radius=90.0, curve=1.8, absolute_touch=False, log_path=None, report=print, stats=None):
+        """`stats` receives the periodic statistics line; by default it goes to `report`."""
+        self.stats = stats or report
         self.pad = vg.VX360Gamepad()
         self.translator = Translator(self.pad, radius, absolute_touch, curve)
         self.latency = LatencyStats(log_path)
@@ -234,81 +238,73 @@ class GamepadServer:
         self.last_packet = None
         self.source = None
         self.rtt_ms = 0
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("0.0.0.0", port))
-        self.sock.settimeout(TIMEOUT_S)
-        self.thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self):
-        self.thread.start()
+        self._last_seq = None
+        self._active = False
+        self._received = 0
+        self._lost = 0
+        self._max_gap = 0.0
+        self._next_report = time.monotonic() + 5
 
     def set_sensitivity(self, radius, curve):
         self.translator.radius = radius
         self.translator.curve = curve
 
-    def _run(self):
-        last_seq = None
-        received = lost = 0
-        max_gap = 0.0
-        next_report = time.monotonic() + 5
-        active = False
+    def handle(self, data, address, now):
+        """Applies one packet. Returns the echo to send back to `address`, or None."""
+        if self.allowed_ip is not None and address[0] != self.allowed_ip:
+            return None
+        if len(data) == PACKET_V2.size:
+            fields = PACKET_V2.unpack(data)
+        elif len(data) == PACKET_V1.size:
+            fields = PACKET_V1.unpack(data) + (0, 0, 0, 0, 0)
+        else:
+            return None
+        magic, version, flags, seq, keys, cx, cy, tx, ty, t_ms, code, age_ms, rtt_ms, variant, _ = fields
+        if magic != MAGIC or version not in (1, 2):
+            return None
 
-        while True:
-            try:
-                data, address = self.sock.recvfrom(64)
-            except socket.timeout:
-                data, address = None, None
-            now = time.monotonic()
+        echo = None
+        if version >= 2:
+            echo = ECHO.pack(b"3DSE", seq, t_ms)
+            self.latency.add_rtt(rtt_ms)
+            self.rtt_ms = rtt_ms
+            if flags & FLAG_PROBE:
+                self.latency.add(time.time() * 1000, code, age_ms, rtt_ms, variant)
+        if address[0] != self.source:
+            self.source = address[0]
+            self.report(f"3DS connected: {self.source}")
+            self._last_seq = None
+        if not self._active:
+            self._last_seq = None  # a new session starts its sequence numbers again
+        if self._last_seq is not None:
+            self._lost += (seq - self._last_seq - 1) & 0xFFFF
+        if self.last_packet is not None:
+            self._max_gap = max(self._max_gap, now - self.last_packet)
+        self._last_seq = seq
+        self.last_packet = now
+        self._received += 1
+        self.translator.apply(keys, cx, cy, bool(flags & FLAG_TOUCH), tx, ty, now)
+        self._active = True
+        return echo
 
-            fields = None
-            if data and (self.allowed_ip is None or address[0] == self.allowed_ip):
-                if len(data) == PACKET_V2.size:
-                    fields = PACKET_V2.unpack(data)
-                elif len(data) == PACKET_V1.size:
-                    fields = PACKET_V1.unpack(data) + (0, 0, 0, 0, 0)
-
-            if fields:
-                magic, version, flags, seq, keys, cx, cy, tx, ty, t_ms, code, age_ms, rtt_ms, variant, _ = fields
-                if magic == MAGIC and version in (1, 2):
-                    if version >= 2:
-                        # Echo first, so the 3DS measures the network and not our processing.
-                        self.sock.sendto(ECHO.pack(b"3DSE", seq, t_ms), address)
-                        self.latency.add_rtt(rtt_ms)
-                        self.rtt_ms = rtt_ms
-                        if flags & FLAG_PROBE:
-                            self.latency.add(time.time() * 1000, code, age_ms, rtt_ms, variant)
-                    if address[0] != self.source:
-                        self.source = address[0]
-                        self.report(f"3DS connected: {self.source}")
-                        last_seq = None
-                    if not active:
-                        last_seq = None  # a new session starts its sequence numbers again
-                    if last_seq is not None:
-                        lost += (seq - last_seq - 1) & 0xFFFF
-                    if self.last_packet is not None:
-                        max_gap = max(max_gap, now - self.last_packet)
-                    last_seq = seq
-                    self.last_packet = now
-                    received += 1
-                    self.translator.apply(keys, cx, cy, bool(flags & FLAG_TOUCH), tx, ty, now)
-                    active = True
-            elif active and (self.last_packet is None or now - self.last_packet > TIMEOUT_S):
-                self.translator.release()
-                active = False
-                self.report("No packets from the 3DS: controller released")
-
-            if now >= next_report:
-                if received:
-                    self.report(f"packets {received / 5:.0f}/s  lost {lost}  max gap {max_gap * 1000:.0f} ms  "
-                                f"{self.latency.summary()}")
-                received = lost = 0
-                max_gap = 0.0
-                next_report = now + 5
+    def tick(self, now):
+        if self._active and (self.last_packet is None or now - self.last_packet > TIMEOUT_S):
+            self.translator.release()
+            self._active = False
+            self.report("No packets from the 3DS: controller released")
+        if now >= self._next_report:
+            if self._received:
+                self.stats(f"packets {self._received / 5:.0f}/s  lost {self._lost}  "
+                           f"max gap {self._max_gap * 1000:.0f} ms  {self.latency.summary()}")
+            self._received = self._lost = 0
+            self._max_gap = 0.0
+            self._next_report = now + 5
 
 
 def main():
+    """Standalone controller for the measurement scripts, which run without the host."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", type=int, default=5005)
+    parser.add_argument("--port", type=int, default=5007)
     parser.add_argument("--radius", type=float, default=90.0,
                         help="touch drag in pixels that moves the right stick fully (default 90)")
     parser.add_argument("--curve", type=float, default=1.8,
@@ -319,11 +315,24 @@ def main():
     parser.add_argument("--log", help="CSV file for every latency reading")
     args = parser.parse_args()
 
-    server = GamepadServer(args.port, args.radius, args.curve, args.absolute_touch, args.log,
-                           report=lambda message: print(message, flush=True))
+    gamepad = Gamepad(args.radius, args.curve, args.absolute_touch, args.log,
+                      report=lambda message: print(message, flush=True))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", args.port))
+    sock.settimeout(0.05)
     print(f"Virtual controller ready. Waiting for the 3DS on UDP {args.port}...", flush=True)
-    server.start()
-    server.thread.join()
+    while True:
+        try:
+            data, address = sock.recvfrom(64)
+        except socket.timeout:
+            data = None
+        now = time.monotonic()
+        if data:
+            echo = gamepad.handle(data, address, now)
+            if echo:
+                # Echo first thing, so the 3DS measures the network and not our processing.
+                sock.sendto(echo, address)
+        gamepad.tick(now)
 
 
 if __name__ == "__main__":

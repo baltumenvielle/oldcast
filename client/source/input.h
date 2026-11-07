@@ -4,7 +4,8 @@
  *
  * The network thread (network.h) calls input_tick() every INPUT_PERIOD_MS. Each tick
  * samples the HID service and, if something changed (or every 50 ms as a heartbeat),
- * sends a 32-byte UDP packet to the PC that streams the video, on port INPUT_PORT.
+ * sends a 32-byte UDP packet to the PC that streams the video, on port INPUT_PORT (the
+ * host's single port, see docs/protocol.md).
  * pc/gamepad.py turns it into a virtual Xbox 360 controller.
  *
  * There is no separate input thread on purpose: libctru talks to the SOC (network)
@@ -23,7 +24,7 @@
 #include <3ds.h>
 #include <stdbool.h>
 
-#define INPUT_PORT 5005
+#define INPUT_PORT 5007
 #define INPUT_PERIOD_MS 8
 
 extern volatile u32 g_input_sent;
@@ -42,6 +43,9 @@ void input_read_echoes(void);
 
 /** IPv4 address (network byte order) to send to. 0 means not known yet. */
 void input_set_target(u32 addr);
+
+/** Signs every packet with this 16-byte key from now on; NULL sends unsigned packets. */
+void input_set_key(const u8 *key);
 
 /** Keys held at the last tick (hidKeysHeld), for screens shown while streaming. */
 u32 input_keys_held(void);

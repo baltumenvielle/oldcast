@@ -85,6 +85,13 @@
   <section id="status"></section>
 
   <section>
+    <h2>Play from outside your home</h2>
+    <div class="row"><label for="remote">Allow connections from outside my network</label>
+      <span><input type="checkbox" id="remote"></span><span></span></div>
+    <p class="empty" id="remote-status" style="margin:6px 0 0"></p>
+  </section>
+
+  <section>
     <h2>Settings</h2>
     <div class="row"><label for="name">PC name shown on the 3DS</label>
       <input type="text" id="name" maxlength="31"><span></span></div>
@@ -160,10 +167,11 @@ function renderStatus() {
   if (s) {
     pill.textContent = "Streaming"; pill.className = "pill live";
     const input = s.input_age_ms == null ? "waiting" : (s.input_age_ms < 500 ? "live" : `${s.input_age_ms} ms ago`);
+    const where = s.remote ? "from outside your home" : "on your network";
     $("status").innerHTML = `
       <div class="hero"><div>
         <div class="big">Streaming to ${esc(s.name || "your 3DS")}</div>
-        <p>${esc(s.address)} · ${fmtTime(s.seconds)}</p>
+        <p>${esc(s.address)} (${where}) · ${fmtTime(s.seconds)}</p>
       </div></div>
       <div class="grid">
         <div class="stat"><div class="k">Video</div><div class="v">${(s.bitrate_kbps / 1000).toFixed(1)} Mbps</div></div>
@@ -185,9 +193,27 @@ function renderStatus() {
     </div></div>`;
 }
 
+function renderRemote() {
+  const r = state.remote;
+  const el = $("remote-status");
+  if (!state.settings.remote_play || r.state === "off") {
+    el.textContent = "Off. Your 3DS can only connect from your home network.";
+  } else if (r.state === "open") {
+    el.innerHTML = `Ready: your router forwards UDP 5007 to this PC (public address ${esc(r.public)}). ` +
+      `A 3DS that paired here can connect from anywhere; it learns this address the next time it ` +
+      `connects at home.`;
+  } else if (r.state === "failed") {
+    el.innerHTML = `<span class="warn">Could not open the router port: ${esc(r.error)}.</span> ` +
+      `Forward UDP port 5007 to this PC in your router's settings, or enable UPnP there.`;
+  } else {
+    el.textContent = "Asking your router to forward UDP port 5007 to this PC...";
+  }
+}
+
 function renderSettings() {
   if (editing) return;
   const st = state.settings;
+  $("remote").checked = st.remote_play;
   $("name").value = st.name;
   $("bitrate").value = String(st.bitrate_kbps);
   $("monitor").value = String(st.monitor);
@@ -211,6 +237,7 @@ function render() {
   if (!state) return;
   $("host").textContent = `${state.host.name} · waiting on the local network`;
   renderStatus();
+  renderRemote();
   renderSettings();
   renderPaired();
   $("log").textContent = state.log.join("\n");
@@ -228,7 +255,7 @@ async function poll() {
 }
 
 // Settings: send each change right away.
-for (const id of ["name", "bitrate", "monitor", "audio", "radius", "curve"]) {
+for (const id of ["name", "bitrate", "monitor", "audio", "radius", "curve", "remote"]) {
   const el = $(id);
   el.addEventListener("focus", () => (editing = true));
   el.addEventListener("blur", () => (editing = false));
@@ -237,8 +264,9 @@ for (const id of ["name", "bitrate", "monitor", "audio", "radius", "curve"]) {
     if (id === "curve") $("curve-v").textContent = Number(el.value).toFixed(1);
   });
   el.addEventListener("change", () => {
-    const key = { bitrate: "bitrate_kbps", radius: "touch_radius", curve: "touch_curve" }[id] || id;
-    const value = id === "audio" ? el.checked : (id === "name" ? el.value : Number(el.value));
+    const key = { bitrate: "bitrate_kbps", radius: "touch_radius", curve: "touch_curve",
+                  remote: "remote_play" }[id] || id;
+    const value = (id === "audio" || id === "remote") ? el.checked : (id === "name" ? el.value : Number(el.value));
     post("/api/settings", { [key]: value });
   });
 }

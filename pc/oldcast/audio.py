@@ -104,7 +104,9 @@ class AudioSender:
     PC is silent and a blocking read could never be stopped.
     """
 
-    def __init__(self, report=print):
+    def __init__(self, send, report=print):
+        """`send(data, address)` transmits a packet; the host sends from its port 5007."""
+        self.send = send
         self.report = report
         self.target = None
         self.packets = 0
@@ -133,7 +135,6 @@ class AudioSender:
         self.device = name
         self.report(f"Capturing '{name}' at {rate} Hz")
         encoder = Encoder(rate)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             while self.running:
                 if stream.get_read_available() < frames:
@@ -143,13 +144,12 @@ class AudioSender:
                 packet = encoder.packet(pcm, int(time.time() * 1000))
                 target = self.target
                 if target:
-                    sock.sendto(packet, target)
+                    self.send(packet, target)
                     self.packets += 1
         finally:
             stream.stop_stream()
             stream.close()
             audio.terminate()
-            sock.close()
 
 
 def main():

@@ -14,11 +14,15 @@
 #define CONTROL_PORT 5007
 #define MAX_HOSTS 8
 
+/** HostEntry flag: a saved PC that is not on this network, reached at its public address. */
+#define HOST_REMOTE 0x80
+
 typedef struct {
     u32 addr;       /**< IPv4 address, network byte order */
+    u16 port;       /**< control port, 5007 unless set otherwise from outside */
     u8 host_id[8];
     char name[33];
-    u8 flags;       /**< OCDA flags: bit 0 paired, bit 1 busy with another 3DS */
+    u8 flags;       /**< OCDA flags (bit 0 paired, bit 1 busy) or HOST_REMOTE */
     u64 last_seen;  /**< svcGetSystemTick() of the last answer */
 } HostEntry;
 

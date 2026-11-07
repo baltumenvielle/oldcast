@@ -40,11 +40,24 @@ typedef enum {
 
 typedef struct {
     u32 host_addr;     /**< PC address, network byte order */
+    u8 host_id[8];     /**< the PC's id, to forget its key if it no longer knows us */
+    u16 host_port;     /**< PC port; 0 = the default, 5007 */
+    bool has_key;      /**< sign every message with `key` (paired with this PC before) */
+    u8 key[16];
     u16 pin;           /**< 4-digit PIN shown while pairing */
     u16 bitrate_kbps;  /**< 0 = the PC's setting */
     bool audio;
     char name[16];     /**< this console's name, shown on the PC */
 } SessionRequest;
+
+/** What the PC sent with its acceptance (OCSA), to be saved with the PC. */
+typedef struct {
+    u8 host_id[8];
+    bool has_key;     /**< a new pairing key (only sent on the local network) */
+    u8 key[16];
+    u32 public_addr;  /**< where to reach the PC from outside, 0 if unknown */
+    u16 public_port;
+} SessionAccept;
 
 /** Cumulative counters. Written by the network thread only. */
 typedef struct {
@@ -71,7 +84,13 @@ bool net_start(s32 prio, RcvBufInfo *rcvbuf, const SessionRequest *request);
 
 SessionState net_session_state(void);
 
-/** For SESSION_DENIED: 1 busy with another 3DS, 2 pairing refused. */
+/** Returns the data of a new acceptance once, to save it. */
+bool net_take_accept(SessionAccept *out);
+
+/**
+ * For SESSION_DENIED: 1 busy with another 3DS, 2 pairing refused, 3 must pair at home
+ * first, 4 the PC no longer knows our key (pair again).
+ */
 u8 net_session_deny_reason(void);
 
 /** True if the audio socket is open (the DSP is available and the port could be bound). */
