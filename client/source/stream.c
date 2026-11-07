@@ -89,6 +89,8 @@ static Totals read_totals(void)
 }
 
 #define NO_ANSWER_TIMEOUT_MS 8000
+// Video stopped for this long after it had started: tell the user instead of freezing.
+#define STALL_NOTICE_MS 1500
 
 /**
  * Shows the state of the session on the top screen until video arrives.
@@ -285,6 +287,8 @@ bool run_stream(const StreamOptions *options)
     u8 variant = DEFAULT_VARIANT;
     bool keep_app = true;
     SessionState shown_state = SESSION_NONE;
+    u64 last_frame = 0;
+    bool stall_shown = false;
 
     while (true) {
         if (!aptMainLoop()) {
@@ -308,8 +312,19 @@ bool run_stream(const StreamOptions *options)
         }
 
         FqSlot *slot = fq_acquire(10 * 1000000LL);
-        if (slot)
+        if (slot) {
+            u32 shown_before = w.shown;
             process_frame(slot, &w, variant);
+            if (w.shown != shown_before) {
+                last_frame = svcGetSystemTick();
+                stall_shown = false; // the new frame has drawn over the notice
+            }
+        }
+        if (options->session && last_frame && !stall_shown &&
+            TICKS_TO_MS(svcGetSystemTick() - last_frame) > STALL_NOTICE_MS) {
+            vo_show_status("Reconnecting...", options->host_name, "Hold SELECT+START to stop");
+            stall_shown = true;
+        }
 
         u64 now = svcGetSystemTick();
         double elapsed_s = TICKS_TO_MS(now - t_session) / 1000.0;

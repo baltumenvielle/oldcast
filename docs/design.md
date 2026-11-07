@@ -133,6 +133,17 @@ refreshes to show what it draws); a full-screen game may skip some of those step
 real step would be 60 fps streaming, which halves the capture wait, but the Old 3DS needs
 14-22 ms per gameplay frame (decode + Y2R), above the 16.7 ms a 60 fps stream allows.
 
+## Recovering from capture loss
+
+Windows takes the screen capture away from ffmpeg (`DXGI_ERROR_ACCESS_LOST`, 0x887A0026)
+whenever the display mode changes: a game entering or leaving full screen, a resolution
+change, a UAC prompt. ffmpeg then exits, and so it did, rarely, on `WSAENOBUFS` when a send
+burst found the default Windows socket buffer full. The host now restarts ffmpeg at once
+(up to 5 times in 30 s) instead of ending the session, and gives it a 1 MB send buffer. On
+the 3DS, if video stops for 1.5 s the screen says "Reconnecting...", and after 3 s the
+client asks for the session again, so a session the PC had ended restarts by itself. In a
+session where the game switched modes twice, both restarts went unnoticed by the player.
+
 ## Audio
 
 **Capture:** `pc/audio.py` records what Windows is playing with WASAPI loopback, at the mix

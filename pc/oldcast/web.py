@@ -6,12 +6,19 @@ JSON body. Binding to the loopback address keeps it unreachable from the network
 import json
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WEB_PORT = 47807
 STATIC = os.path.join(os.path.dirname(__file__), "web")
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
                  ".ico": "image/x-icon"}
+
+# Monotonic time of the page's last request. The page polls every half second while it is
+# open, so this tells whether the window is still open.
+last_poll = None
+# Monotonic time at which the page said it was closing (pagehide), or None.
+closing_at = None
 
 
 def make_handler(host):
@@ -28,7 +35,9 @@ def make_handler(host):
             self.wfile.write(body)
 
         def do_GET(self):
+            global last_poll
             if self.path == "/api/state":
+                last_poll = time.monotonic()
                 self._send(200, json.dumps(host.snapshot()).encode())
                 return
             name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
@@ -41,7 +50,12 @@ def make_handler(host):
             self._send(200, body, CONTENT_TYPES.get(os.path.splitext(path)[1], "application/octet-stream"))
 
         def do_POST(self):
+            global closing_at
             length = int(self.headers.get("Content-Length", 0))
+            if self.path == "/api/closing":
+                closing_at = time.monotonic()
+                self._send(204, b"")
+                return
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
             except ValueError:

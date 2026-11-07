@@ -18,6 +18,11 @@ from .video import VideoSender
 SESSION_TIMEOUT_S = 3.0  # no input packets for this long ends the session
 STARTUP_GRACE_S = 6.0    # the 3DS needs a moment to start sending input after OCSA
 DENY_MEMORY_S = 30.0     # a rejected 3DS is answered OCSD for this long
+# ffmpeg stops when Windows takes the screen capture away (a game switching to or from full
+# screen, a resolution change, a UAC prompt: DXGI_ERROR_ACCESS_LOST) or when a send fails
+# with WSAENOBUFS. Both are transient, so it is restarted; only repeated failures end the session.
+RESTART_LIMIT = 5        # restarts allowed within RESTART_WINDOW_S
+RESTART_WINDOW_S = 30.0
 
 DEFAULT_SETTINGS = {
     "name": socket.gethostname(),
@@ -151,7 +156,7 @@ class Host:
         settings = self.settings.data
         bitrate = fields["bitrate_kbps"] or settings["bitrate_kbps"]
         self.session = {"client": client, "name": fields["name"], "video": address, "audio": None,
-                        "started": time.monotonic(), "bitrate_kbps": bitrate}
+                        "started": time.monotonic(), "bitrate_kbps": bitrate, "restarts": []}
         self.paired.data[client]["name"] = fields["name"]
         self.paired.save()
         self.gamepad.allowed_ip = address[0]
@@ -181,8 +186,16 @@ class Host:
             if now - self.session["started"] > STARTUP_GRACE_S and (last is None or now - last > SESSION_TIMEOUT_S):
                 self.stop_session("no input from the 3DS for 3 seconds")
             elif not self.video.running():
-                error = self.video.error()
-                self.stop_session(f"ffmpeg stopped: {error}" if error else "ffmpeg stopped")
+                error = self.video.error() or "no error message"
+                restarts = [t for t in self.session["restarts"] if now - t < RESTART_WINDOW_S]
+                if len(restarts) >= RESTART_LIMIT:
+                    self.stop_session(f"ffmpeg kept stopping: {error}")
+                    return
+                restarts.append(now)
+                self.session["restarts"] = restarts
+                self.report(f"ffmpeg stopped ({error.splitlines()[0]}); restarting")
+                address = self.session["video"]
+                self.video.start(address[0], address[1], self.session["bitrate_kbps"], self.settings.data["monitor"])
 
     # --- actions from the user interface -------------------------------------------------
 

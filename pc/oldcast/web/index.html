@@ -243,6 +243,9 @@ for (const id of ["name", "bitrate", "monitor", "audio", "radius", "curve"]) {
   });
 }
 
+// Tell the host that the window is closing, so it stops right away.
+window.addEventListener("pagehide", () => navigator.sendBeacon("/api/closing"));
+
 poll();
 </script>
 </body>

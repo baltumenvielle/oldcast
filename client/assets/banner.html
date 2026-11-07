@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- Source of banner.png (256x128, shown on the HOME menu's top screen). Render it with
+     Edge headless at 256x128, as client/scripts/make-assets.ps1 does. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 256px; height: 128px; overflow: hidden; }
+  body { background: linear-gradient(135deg, #3b2f8f, #1f1d4f); display: flex; align-items: center;
+         gap: 14px; padding: 0 18px; box-sizing: border-box; font-family: "Segoe UI", sans-serif; }
+  img { width: 76px; height: 76px; filter: drop-shadow(0 3px 6px rgba(0, 0, 0, .35)); }
+  h1 { margin: 0; color: #f4f2ff; font-size: 34px; font-weight: 700; letter-spacing: .5px; }
+  p { margin: 2px 0 0; color: #ff9a8e; font-size: 14px; font-weight: 600; white-space: nowrap; }
+</style>
+</head>
+<body>
+  <img src="../../pc/oldcast/web/icon.svg" alt="">
+  <div><h1>OldCast</h1><p>Your PC, on your 3DS</p></div>
+</body>
+</html>

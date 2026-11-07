@@ -54,6 +54,7 @@ typedef struct {
     volatile u32 eagain;     /**< recvfrom() calls that found no data after a positive poll() */
     volatile u32 revents;    /**< last revents value of the video socket */
     volatile u32 late_ticks; /**< input ticks that ran more than one period late */
+    volatile u32 rerequests; /**< sessions requested again after video stopped */
     volatile s32 error;      /**< last unexpected errno, 0 if none */
 } NetStats;
 

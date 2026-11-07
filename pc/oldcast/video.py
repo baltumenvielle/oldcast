@@ -20,7 +20,8 @@ def ffmpeg_command(ip, port, bitrate_kbps=2000, monitor=0, test_pattern=False):
              "-bf", "0", "-g", "15",
              # Every frame carries its length, so the 3DS decodes it as soon as it arrives.
              "-muxdelay", "0", "-muxpreload", "0", "-flush_packets", "1", "-omit_video_pes_length", "0",
-             "-f", "mpegts", f"udp://{ip}:{port}?pkt_size=1316"])
+             # A 1 MB send buffer absorbs bursts; Windows' small default can fail with WSAENOBUFS.
+             "-f", "mpegts", f"udp://{ip}:{port}?pkt_size=1316&buffer_size=1048576"])
 
 
 class VideoSender:

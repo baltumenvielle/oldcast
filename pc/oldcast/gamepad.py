@@ -280,6 +280,9 @@ class GamepadServer:
                     if address[0] != self.source:
                         self.source = address[0]
                         self.report(f"3DS connected: {self.source}")
+                        last_seq = None
+                    if not active:
+                        last_seq = None  # a new session starts its sequence numbers again
                     if last_seq is not None:
                         lost += (seq - last_seq - 1) & 0xFFFF
                     if self.last_packet is not None:

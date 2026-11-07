@@ -19,6 +19,21 @@ APP_TITLE		:=	OldCast
 APP_DESCRIPTION	:=	Low-latency PC game streaming
 APP_AUTHOR		:=	baltumenvielle
 
+#---------------------------------------------------------------------------------
+# CIA (installable title with a HOME menu icon): "make cia".
+# Needs makerom (3DSGuy/Project_CTR) and bannertool (Epicpkmn11/bannertool) in tools/
+# or given with MAKEROM=... BANNERTOOL=... The artwork in assets/ comes from
+# scripts/make-assets.ps1.
+#---------------------------------------------------------------------------------
+TOOLS			?=	$(CURDIR)/tools
+MAKEROM			?=	$(TOOLS)/makerom
+BANNERTOOL		?=	$(TOOLS)/bannertool
+APP_PRODUCT_CODE	:=	CTR-P-OCST
+APP_UNIQUE_ID	:=	0xFCA57
+VERSION_MAJOR	:=	0
+VERSION_MINOR	:=	3
+VERSION_MICRO	:=	0
+
 # libavcodec/libavutil built by scripts/build-ffmpeg.sh
 FFMPEG_DIR	:=	$(CURDIR)/third_party/ffmpeg
 
@@ -73,7 +88,7 @@ export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 export APP_ICON := $(CURDIR)/assets/icon.png
 export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
-.PHONY: $(BUILD) clean all
+.PHONY: $(BUILD) clean all cia
 
 all: $(BUILD)
 
@@ -81,9 +96,19 @@ $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
+cia: $(BUILD)
+	@$(BANNERTOOL) makebanner -i assets/banner.png -a assets/banner.wav -o $(BUILD)/banner.bnr
+	@$(BANNERTOOL) makesmdh -s "$(APP_TITLE)" -l "$(APP_DESCRIPTION)" -p "$(APP_AUTHOR)" \
+		-i assets/icon.png -o $(BUILD)/icon.icn
+	@$(MAKEROM) -f cia -o $(TARGET).cia -target t -exefslogo -elf $(TARGET).elf -rsf assets/oldcast.rsf \
+		-banner $(BUILD)/banner.bnr -icon $(BUILD)/icon.icn \
+		-DAPP_TITLE="$(APP_TITLE)" -DAPP_PRODUCT_CODE="$(APP_PRODUCT_CODE)" -DAPP_UNIQUE_ID="$(APP_UNIQUE_ID)" \
+		-major $(VERSION_MAJOR) -minor $(VERSION_MINOR) -micro $(VERSION_MICRO)
+	@echo built ... $(TARGET).cia
+
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).3dsx $(TARGET).smdh $(TARGET).elf
+	@rm -fr $(BUILD) $(TARGET).3dsx $(TARGET).smdh $(TARGET).elf $(TARGET).cia
 
 #---------------------------------------------------------------------------------
 else

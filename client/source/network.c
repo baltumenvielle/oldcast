@@ -19,6 +19,9 @@
 #define NET_STACK_SIZE (32 * 1024)
 #define MAX_READS_PER_WAKEUP 16
 #define REQUEST_INTERVAL_MS 500
+// No video for this long during an active session: ask for the session again. If the PC
+// ended it (or restarted), it answers with a new one; if it is still running, OCSA again.
+#define VIDEO_SILENCE_MS 3000
 
 typedef struct __attribute__((packed)) {
     char magic[4]; // "OCSR"
@@ -57,6 +60,7 @@ static volatile SessionState s_state;
 static volatile u8 s_deny_reason;
 static u64 s_next_request;
 static u64 s_next_punch;
+static volatile u64 s_last_video;
 
 static void send_to_host(int sock, const void *msg, size_t size)
 {
@@ -123,6 +127,12 @@ static void session_tick(u64 now)
         s_next_request = now + interval;
     }
     // Until audio flows, keep telling the PC where to send it.
+    if (s_state == SESSION_ACTIVE && s_last_video && TICKS_TO_MS(now - s_last_video) > VIDEO_SILENCE_MS) {
+        s_state = SESSION_REQUESTING;
+        s_next_request = 0;
+        s_last_video = now; // wait another period before asking again
+        g_net_stats.rerequests++;
+    }
     if (s_state == SESSION_ACTIVE && s_audio_sock >= 0 && s_request.audio && g_audio_stats.packets == 0 &&
         now >= s_next_punch) {
         send_client_msg(s_audio_sock, "OCAP");
@@ -193,6 +203,7 @@ static void read_video(void)
         }
         // Button state goes back to whoever is sending the video.
         input_set_target(sender.sin_addr.s_addr);
+        s_last_video = svcGetSystemTick();
         g_net_stats.packets++;
         g_net_stats.bytes += (u32)got;
         ts_demux_feed(&s_demux, buf, (size_t)got);
@@ -315,6 +326,7 @@ bool net_start(s32 prio, RcvBufInfo *rcvbuf, const SessionRequest *request)
         s_request = *request;
         s_state = SESSION_REQUESTING;
         s_next_request = s_next_punch = 0;
+        s_last_video = 0;
         input_set_target(request->host_addr);
     }
 

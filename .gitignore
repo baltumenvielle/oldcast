@@ -5,6 +5,7 @@ client/*.3dsx
 client/*.elf
 client/*.smdh
 client/*.map
+client/*.cia
 
 # FFmpeg source and build, recreated by client/scripts/build-ffmpeg.sh
 client/third_party/
