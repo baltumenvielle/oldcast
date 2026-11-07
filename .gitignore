@@ -1,0 +1,22 @@
+# 3DS build output
+client/build/
+client/build_*/
+client/*.3dsx
+client/*.elf
+client/*.smdh
+client/*.map
+
+# FFmpeg source and build, recreated by client/scripts/build-ffmpeg.sh
+client/third_party/
+
+# PC
+pc/.venv/
+__pycache__/
+
+# Local data: test results, benchmark clips, reference checkouts, personal notes
+results/
+*.ts
+*.m2v
+_ref/
+ESTADO.md
+comando.txt

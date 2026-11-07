@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Latency clock</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #000; color: #fff; overflow: hidden; }
+  /* Machine-readable clock: 24 bars across the top 15% of the screen. */
+  #bars { position: fixed; top: 0; left: 0; width: 100vw; height: 15vh; display: flex; }
+  #bars div { flex: 1; }
+  .on { background: #fff; }
+  .off { background: #000; }
+  /* Human-readable clock, for the camera method. */
+  #digits { position: fixed; top: 15vh; bottom: 0; left: 0; right: 0;
+            display: flex; align-items: center; justify-content: center;
+            font: 700 26vw/1 Consolas, monospace; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div id="bars"></div>
+<div id="digits">0000</div>
+<script>
+  // Show this page full screen (F11) on the captured monitor while streaming.
+  //
+  // Automatic measurement: the bars encode Date.now() in milliseconds (low 16 bits). The 3DS
+  // reads them from every frame it shows and sends the value back; pc/gamepad.py subtracts it
+  // from the arrival time. Layout, left to right (see client/source/latency_probe.h):
+  //   1 0 | 16 data bits, most significant first | 4 check bits (nibble sum mod 16) | 0 1
+  //
+  // Camera measurement: film the monitor and the 3DS together; in a paused frame, the
+  // monitor number minus the 3DS number is the latency in milliseconds.
+  //
+  // ?code=N draws a fixed value instead of the clock (used by the tests).
+  const BARS = 24;
+  const bars = document.getElementById('bars');
+  const digits = document.getElementById('digits');
+  const cells = [];
+  for (let i = 0; i < BARS; i++) {
+    const cell = document.createElement('div');
+    bars.appendChild(cell);
+    cells.push(cell);
+  }
+  const fixed = new URLSearchParams(location.search).get('code');
+
+  function encode(value) {
+    const check = ((value & 15) + ((value >> 4) & 15) + ((value >> 8) & 15) + ((value >> 12) & 15)) & 15;
+    const bits = [1, 0];
+    for (let i = 15; i >= 0; i--) bits.push((value >> i) & 1);
+    for (let i = 3; i >= 0; i--) bits.push((check >> i) & 1);
+    bits.push(0, 1);
+    return bits;
+  }
+
+  function draw() {
+    const now = Date.now();
+    const value = fixed !== null ? Number(fixed) & 0xFFFF : now & 0xFFFF;
+    encode(value).forEach((bit, i) => { cells[i].className = bit ? 'on' : 'off'; });
+    digits.textContent = String(now % 10000).padStart(4, '0');
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>
