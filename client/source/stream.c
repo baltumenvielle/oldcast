@@ -88,6 +88,52 @@ static Totals read_totals(void)
     };
 }
 
+#define NO_ANSWER_TIMEOUT_MS 8000
+
+/**
+ * Shows the state of the session on the top screen until video arrives.
+ * @return false if the stream should end (denied, or cancelled with B).
+ */
+static bool show_session_state(const StreamOptions *options, SessionState *shown, u64 t_session)
+{
+    SessionState state = net_session_state();
+    const char *host = options->host_name ? options->host_name : "your PC";
+    char line[64];
+
+    if (state == SESSION_DENIED) {
+        snprintf(line, sizeof(line), "%s", host);
+        vo_show_status(net_session_deny_reason() == 1 ? "This PC is busy" : "Pairing was rejected", line,
+                       net_session_deny_reason() == 1 ? "It is streaming to another 3DS." : "Press B to go back");
+        while (aptMainLoop() && !(input_keys_held() & KEY_B))
+            svcSleepThread(50 * 1000000LL);
+        return false;
+    }
+    if (state != SESSION_ACTIVE && (input_keys_held() & KEY_B))
+        return false;
+    if (state == *shown)
+        return true;
+    *shown = state;
+
+    switch (state) {
+    case SESSION_REQUESTING:
+        snprintf(line, sizeof(line), "%s", host);
+        vo_show_status("Connecting...", line, "B: cancel");
+        break;
+    case SESSION_PAIRING:
+        snprintf(line, sizeof(line), "PIN  %04u", options->session->pin);
+        vo_show_status("Allow this 3DS on your PC", line, "Check that the PC window shows the same PIN.  B: cancel");
+        break;
+    case SESSION_ACTIVE:
+        snprintf(line, sizeof(line), "%s", host);
+        vo_show_status("Starting the stream...", line, "Hold SELECT+START to stop");
+        break;
+    default:
+        break;
+    }
+    (void)t_session;
+    return true;
+}
+
 /** Decodes one queued frame and, unless newer frames are waiting, shows it. */
 static void process_frame(FqSlot *slot, Window *w, u8 variant_index)
 {
@@ -216,7 +262,7 @@ bool run_stream(const StreamOptions *options)
     fq_reset();
     RcvBufInfo rcvbuf;
     // From here on the network thread is the only reader of the HID service.
-    if (!net_start(prio - 1, &rcvbuf)) {
+    if (!net_start(prio - 1, &rcvbuf, options->session)) {
         printf("Error: cannot open the network sockets\n(errno %d).\nA: back  START: quit\n", errno);
         return wait_for_key();
     }
@@ -238,6 +284,7 @@ bool run_stream(const StreamOptions *options)
     u32 total_shown = 0;
     u8 variant = DEFAULT_VARIANT;
     bool keep_app = true;
+    SessionState shown_state = SESSION_NONE;
 
     while (true) {
         if (!aptMainLoop()) {
@@ -246,6 +293,19 @@ bool run_stream(const StreamOptions *options)
         }
         if (input_exit_requested())
             break;
+
+        // Until the first frame is shown, the top screen shows the session's progress.
+        if (options->session && total_shown + w.shown == 0) {
+            if (!show_session_state(options, &shown_state, t_session))
+                break;
+            if (net_session_state() == SESSION_REQUESTING &&
+                TICKS_TO_MS(svcGetSystemTick() - t_session) > NO_ANSWER_TIMEOUT_MS) {
+                vo_show_status("No answer", options->host_name, "Is OldCast running on the PC?  B: back");
+                while (aptMainLoop() && !(input_keys_held() & KEY_B))
+                    svcSleepThread(50 * 1000000LL);
+                break;
+            }
+        }
 
         FqSlot *slot = fq_acquire(10 * 1000000LL);
         if (slot)

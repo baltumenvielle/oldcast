@@ -7,6 +7,8 @@
 #include <3ds.h>
 #include <stdbool.h>
 
+#include "network.h"
+
 typedef struct {
     /** Stop automatically after this many seconds; 0 runs until the user quits. */
     u32 seconds;
@@ -16,6 +18,13 @@ typedef struct {
      * a single session compares both under the same network conditions.
      */
     bool ab_test;
+    /**
+     * Session to request from a PC (docs/protocol.md), or NULL to only listen for video
+     * pushed by the PC, as the measurement scripts in pc/ do.
+     */
+    const SessionRequest *session;
+    /** Name of that PC, for the status screens. */
+    const char *host_name;
 } StreamOptions;
 
 /**

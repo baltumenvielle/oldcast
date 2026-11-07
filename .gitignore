@@ -20,3 +20,7 @@ results/
 _ref/
 ESTADO.md
 comando.txt
+
+# makerom / bannertool binaries, downloaded by the user
+client/tools/
+*.exe

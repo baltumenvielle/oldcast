@@ -69,7 +69,8 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 
 export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
-export APP_ICON := $(CTRULIB)/default_icon.png
+# 48x48 icon shown by the Homebrew Launcher, rendered from pc/oldcast/web/icon.svg
+export APP_ICON := $(CURDIR)/assets/icon.png
 export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
 .PHONY: $(BUILD) clean all

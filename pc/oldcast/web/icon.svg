@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- OldCast icon: an open clamshell console casting from its top screen. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b2f8f"/>
+      <stop offset="1" stop-color="#1f1d4f"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <!-- broadcast arcs -->
+  <g fill="none" stroke="#ff7a6b" stroke-linecap="round" stroke-width="3.2">
+    <path d="M40.5 12.5a9 9 0 0 1 0 11"/>
+    <path d="M45.5 8.5a15 15 0 0 1 0 19"/>
+  </g>
+  <!-- top half with its screen -->
+  <rect x="11" y="9" width="26" height="19" rx="3.5" fill="#f4f2ff"/>
+  <rect x="14.5" y="12" width="19" height="13" rx="1.5" fill="#ff7a6b"/>
+  <!-- hinge -->
+  <rect x="13" y="29.5" width="22" height="3" rx="1.5" fill="#b9b4e6"/>
+  <!-- bottom half: screen, circle pad and buttons -->
+  <rect x="11" y="34" width="26" height="21" rx="3.5" fill="#f4f2ff"/>
+  <rect x="18" y="37" width="12" height="9" rx="1" fill="#3b2f8f"/>
+  <circle cx="14.6" cy="38.6" r="2" fill="#3b2f8f"/>
+  <circle cx="33.6" cy="38.6" r="1.2" fill="#ff7a6b"/>
+  <circle cx="33.6" cy="42.4" r="1.2" fill="#3b2f8f"/>
+</svg>

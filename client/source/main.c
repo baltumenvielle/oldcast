@@ -7,10 +7,13 @@
  * client decodes and shows it on the top screen and sends the buttons back to the PC.
  *
  * Usage:
- *   - From the Homebrew Launcher: A starts streaming, Y runs the offline benchmark.
+ *   - The home screen lists the PCs running the OldCast host (pc/oldcast): A connects,
+ *     X only listens (for the measurement scripts in pc/), Y runs the offline benchmark.
  *   - With 3dslink: `3dslink -a <3ds-ip> -s oldcast.3dsx stream [seconds] [ab]` or
  *     `... bench` starts that mode directly, sends metrics to the PC and exits at the end.
  *     "ab" alternates two display configurations every 10 seconds (see stream.c).
+ *     `... discover [seconds]` lists the PCs that answer discovery (protocol test), and
+ *     `... connect [seconds]` connects to the first PC found.
  */
 #include <3ds.h>
 #include <arpa/inet.h>
@@ -24,6 +27,7 @@
 #include "bench.h"
 #include "common.h"
 #include "decoder.h"
+#include "discovery.h"
 #include "frame_queue.h"
 #include "network.h"
 #include "stream.h"
@@ -31,13 +35,174 @@
 
 #define SOC_BUFFER_SIZE 0x100000
 
-static void print_home(void)
+/** This console's user name from the system settings, as plain ASCII. */
+static void console_name(char *out, size_t size)
+{
+    snprintf(out, size, "3DS");
+    u16 utf16[14] = {0};
+    if (R_FAILED(cfguInit()))
+        return;
+    if (R_SUCCEEDED(CFGU_GetConfigInfoBlk2(sizeof(utf16), 0x000A0000, utf16)) && utf16[0]) {
+        size_t n = 0;
+        for (size_t i = 0; i < 14 && utf16[i] && n + 1 < size; i++)
+            out[n++] = utf16[i] < 0x80 ? (char)utf16[i] : '?';
+        out[n] = 0;
+    }
+    cfguExit();
+}
+
+/** Connects to `host` and streams until the user stops. Returns false to quit the app. */
+static bool connect_to(const HostEntry *host, u32 seconds)
+{
+    SessionRequest request;
+    memset(&request, 0, sizeof(request));
+    request.host_addr = host->addr;
+    request.pin = (u16)(1000 + svcGetSystemTick() % 9000);
+    request.audio = audio_available();
+    console_name(request.name, sizeof(request.name));
+
+    char host_name[sizeof(host->name)];
+    memcpy(host_name, host->name, sizeof(host_name));
+    StreamOptions options = {.seconds = seconds, .session = &request, .host_name = host_name};
+    return run_stream(&options);
+}
+
+static void draw_home_list(const HostEntry *hosts, int count, int cursor)
+{
+    printf("\x1b[1;1H" APP_NAME "\x1b[K\n\x1b[K\n");
+    if (count == 0)
+        printf("Looking for PCs on your network...\x1b[K\nOpen OldCast on your PC.\x1b[K\n\x1b[K\n");
+    else
+        printf("Choose your PC:\x1b[K\n\x1b[K\n\x1b[K\n");
+    for (int i = 0; i < MAX_HOSTS; i++) {
+        if (i < count) {
+            struct in_addr a = {.s_addr = hosts[i].addr};
+            const char *tag = (hosts[i].flags & 2) ? "busy" : (hosts[i].flags & 1) ? "paired" : "new";
+            printf("%s %-18.18s %-6s\x1b[K\n", i == cursor ? ">" : " ", hosts[i].name, tag);
+            printf("    %s\x1b[K\n", inet_ntoa(a));
+        } else {
+            printf("\x1b[K\n\x1b[K\n");
+        }
+    }
+    printf("\x1b[K\nA connect  X listen  Y benchmark\x1b[K\nSTART quit\x1b[K\n");
+}
+
+/** Home screen: the list of PCs. Returns false when the app should close. */
+static bool run_home(void)
+{
+    if (!discovery_start()) {
+        printf("Cannot open the network.\nSTART: quit\n");
+        return wait_for_key();
+    }
+    consoleClear();
+    vo_show_status("Looking for PCs...", NULL, "Open OldCast on your PC");
+
+    int cursor = 0, last_count = -1;
+    u64 next_draw = 0;
+    bool keep_app = true;
+    while (aptMainLoop()) {
+        discovery_poll();
+        const HostEntry *hosts;
+        int count = discovery_hosts(&hosts);
+        if (cursor >= count)
+            cursor = count ? count - 1 : 0;
+
+        gspWaitForVBlank();
+        hidScanInput();
+        u32 down = hidKeysDown();
+        bool moved = false;
+        if ((down & KEY_DOWN) && cursor + 1 < count) {
+            cursor++;
+            moved = true;
+        }
+        if ((down & KEY_UP) && cursor > 0) {
+            cursor--;
+            moved = true;
+        }
+
+        if (count != last_count) {
+            vo_show_status(count ? "Choose your PC" : "Looking for PCs...", NULL,
+                           count ? "A: connect" : "Open OldCast on your PC");
+            last_count = count;
+        }
+        u64 now = svcGetSystemTick();
+        if (moved || now >= next_draw) {
+            draw_home_list(hosts, count, cursor);
+            gfxFlushBuffers();
+            next_draw = now + (u64)(500 * CPU_TICKS_PER_MSEC);
+        }
+
+        if (down & KEY_START) {
+            keep_app = false;
+            break;
+        }
+        if ((down & KEY_A) && count) {
+            HostEntry chosen = hosts[cursor];
+            discovery_stop();
+            keep_app = connect_to(&chosen, 0);
+            if (!keep_app || !discovery_start())
+                return false;
+            consoleClear();
+            last_count = -1;
+        } else if (down & KEY_X) {
+            discovery_stop();
+            StreamOptions options = {0};
+            vo_show_status("Listening for video", NULL, "Hold SELECT+START to stop");
+            keep_app = run_stream(&options);
+            if (!keep_app || !discovery_start())
+                return false;
+            consoleClear();
+            last_count = -1;
+        } else if (down & KEY_Y) {
+            discovery_stop();
+            keep_app = run_bench();
+            if (!keep_app || !discovery_start())
+                return false;
+            consoleClear();
+            last_count = -1;
+        }
+    }
+    discovery_stop();
+    return keep_app;
+}
+
+/** Protocol test: looks for PCs and reports what answers, on screen and to the PC. */
+static void run_discover(u32 seconds)
 {
     consoleClear();
-    printf(APP_NAME " - Old 3DS\n\n");
-    printf("  A      receive video (UDP %d)\n", VIDEO_PORT);
-    printf("  Y      offline benchmark (bench.ts)\n");
-    printf("  START  quit\n");
+    if (!discovery_start()) {
+        printf("Cannot open the discovery socket.\n");
+        return;
+    }
+    const u8 *id = client_id();
+    printf("Looking for PCs (%lu s)\nthis 3DS: %02x%02x%02x%02x%02x%02x%02x%02x\n\n", seconds, id[0], id[1], id[2],
+           id[3], id[4], id[5], id[6], id[7]);
+    if (g_linked)
+        fprintf(stderr, "# discover: client id %02x%02x%02x%02x%02x%02x%02x%02x\n", id[0], id[1], id[2], id[3], id[4],
+                id[5], id[6], id[7]);
+
+    u64 start = svcGetSystemTick();
+    u64 next_report = start;
+    while (aptMainLoop() && TICKS_TO_MS(svcGetSystemTick() - start) < seconds * 1000.0) {
+        discovery_poll();
+        if (svcGetSystemTick() >= next_report) {
+            const HostEntry *hosts;
+            int count = discovery_hosts(&hosts);
+            double t = TICKS_TO_MS(svcGetSystemTick() - start) / 1000.0;
+            printf("\x1b[5;1H%.0f s: %d PC(s)\x1b[K\n", t, count);
+            for (int i = 0; i < count; i++) {
+                struct in_addr a = {.s_addr = hosts[i].addr};
+                printf("  %-20s %s\x1b[K\n", hosts[i].name, inet_ntoa(a));
+                if (g_linked)
+                    fprintf(stderr, "%.1f,%s,%s,%u\n", t, hosts[i].name, inet_ntoa(a), hosts[i].flags);
+            }
+            if (g_linked && count == 0)
+                fprintf(stderr, "%.1f,none\n", t);
+            next_report += (u64)(1000 * CPU_TICKS_PER_MSEC);
+        }
+        svcSleepThread(20 * 1000000LL);
+    }
+    discovery_stop();
 }
 
 /** Runs the mode requested on the command line. Returns false if it was unknown. */
@@ -54,6 +219,34 @@ static bool run_auto_mode(int argc, char **argv)
     }
     if (strcmp(mode, "bench") == 0) {
         run_bench();
+        return true;
+    }
+    if (strcmp(mode, "discover") == 0) {
+        run_discover(argc > 2 ? (u32)strtoul(argv[2], NULL, 10) : 10);
+        return true;
+    }
+    if (strcmp(mode, "connect") == 0) {
+        // Find the first PC (up to 5 s), then stream from it.
+        if (!discovery_start())
+            return true;
+        u64 start = svcGetSystemTick();
+        const HostEntry *hosts;
+        while (aptMainLoop() && discovery_hosts(&hosts) == 0 && TICKS_TO_MS(svcGetSystemTick() - start) < 5000) {
+            discovery_poll();
+            svcSleepThread(20 * 1000000LL);
+        }
+        HostEntry chosen;
+        bool found = discovery_hosts(&hosts) > 0;
+        if (found)
+            chosen = hosts[0];
+        discovery_stop();
+        if (found) {
+            if (g_linked)
+                fprintf(stderr, "# connecting to %s\n", chosen.name);
+            connect_to(&chosen, argc > 2 ? (u32)strtoul(argv[2], NULL, 10) : 0);
+        } else if (g_linked) {
+            fprintf(stderr, "# no PC found\n");
+        }
         return true;
     }
     return false;
@@ -91,22 +284,7 @@ int main(int argc, char **argv)
         running = false; // launched for one job: exit when it is done
 
     if (running)
-        print_home();
-    while (running && aptMainLoop()) {
-        gspWaitForVBlank();
-        hidScanInput();
-        u32 down = hidKeysDown();
-        if (down & KEY_START)
-            break;
-        if (down & KEY_A) {
-            StreamOptions options = {0};
-            running = run_stream(&options);
-            print_home();
-        } else if (down & KEY_Y) {
-            running = run_bench();
-            print_home();
-        }
-    }
+        run_home();
 
     if (ok) {
         audio_exit();

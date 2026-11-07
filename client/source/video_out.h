@@ -20,6 +20,12 @@ void vo_exit(void);
 void vo_clear(void);
 
 /**
+ * Shows a status screen on the top screen (menus, connecting, pairing...).
+ * Any argument can be NULL. The next video frame simply draws over it.
+ */
+void vo_show_status(const char *title, const char *detail, const char *hint);
+
+/**
  * Converts a decoded picture into the next texture. Blocks until Y2R finishes.
  * @return false if the picture is not 400x240 or the conversion failed.
  */

@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     import audioop  # noqa: F401  (imported here to silence its warning once)
-from audio import HEADER, Encoder, decode_packet  # noqa: E402
+from oldcast.audio import HEADER, Encoder, decode_packet  # noqa: E402
 
 RATE = 48000
 FRAMES = 480

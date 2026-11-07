@@ -50,6 +50,7 @@ volatile u32 g_input_rtt_ms;
 static int s_sock = -1;
 static volatile u32 s_target;
 static volatile bool s_exit;
+static volatile u32 s_keys;
 
 static InputPacket s_pkt;
 static InputPacket s_last;
@@ -77,6 +78,7 @@ int input_open(void)
     s_combo_start = 0;
     s_target = 0;
     s_exit = false;
+    s_keys = 0;
     s_probe_new = false;
     g_input_sent = 0;
     g_input_rtt_ms = 0;
@@ -104,6 +106,7 @@ void input_tick(void)
 {
     hidScanInput();
     u32 keys = hidKeysHeld();
+    s_keys = keys;
     circlePosition circle;
     hidCircleRead(&circle);
     touchPosition touch = {0, 0};
@@ -160,6 +163,11 @@ void input_tick(void)
 void input_set_target(u32 addr)
 {
     s_target = addr;
+}
+
+u32 input_keys_held(void)
+{
+    return s_keys;
 }
 
 bool input_exit_requested(void)

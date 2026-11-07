@@ -43,6 +43,9 @@ void input_read_echoes(void);
 /** IPv4 address (network byte order) to send to. 0 means not known yet. */
 void input_set_target(u32 addr);
 
+/** Keys held at the last tick (hidKeysHeld), for screens shown while streaming. */
+u32 input_keys_held(void);
+
 /** True once SELECT+START have been held for a second: the user wants to stop. */
 bool input_exit_requested(void);
 

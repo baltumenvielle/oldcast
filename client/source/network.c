@@ -11,12 +11,36 @@
 
 #include "audio.h"
 #include "common.h"
+#include "discovery.h"
 #include "frame_queue.h"
 #include "input.h"
 
 #define UDP_BUF_SIZE 2048
 #define NET_STACK_SIZE (32 * 1024)
 #define MAX_READS_PER_WAKEUP 16
+#define REQUEST_INTERVAL_MS 500
+
+typedef struct __attribute__((packed)) {
+    char magic[4]; // "OCSR"
+    u8 version;
+    u8 reserved[3];
+    u8 client_id[8];
+    u16 pin;
+    u16 bitrate_kbps;
+    u8 flags; // bit 0: audio wanted
+    u8 reserved2[3];
+    char name[16];
+} SessionRequestMsg;
+
+typedef struct __attribute__((packed)) {
+    char magic[4]; // "OCAP" or "OCSE"
+    u8 version;
+    u8 reserved[3];
+    u8 client_id[8];
+} ClientMsg;
+
+_Static_assert(sizeof(SessionRequestMsg) == 40, "OCSR is 40 bytes");
+_Static_assert(sizeof(ClientMsg) == 16, "OCAP/OCSE are 16 bytes");
 
 NetStats g_net_stats;
 
@@ -26,6 +50,85 @@ static int s_input_sock = -1;
 static Thread s_thread;
 static volatile bool s_run;
 static TsDemux s_demux;
+
+static bool s_has_request;
+static SessionRequest s_request;
+static volatile SessionState s_state;
+static volatile u8 s_deny_reason;
+static u64 s_next_request;
+static u64 s_next_punch;
+
+static void send_to_host(int sock, const void *msg, size_t size)
+{
+    struct sockaddr_in to;
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons(CONTROL_PORT);
+    to.sin_addr.s_addr = s_request.host_addr;
+    sendto(sock, msg, size, 0, (struct sockaddr *)&to, sizeof(to));
+}
+
+static void send_client_msg(int sock, const char *magic)
+{
+    ClientMsg m;
+    memset(&m, 0, sizeof(m));
+    memcpy(m.magic, magic, 4);
+    m.version = 1;
+    memcpy(m.client_id, client_id(), 8);
+    send_to_host(sock, &m, sizeof(m));
+}
+
+/**
+ * OCSR goes out from the video socket on purpose: the PC sends the video back to the
+ * address and port it came from, which also opens the way through a router.
+ */
+static void send_session_request(void)
+{
+    SessionRequestMsg m;
+    memset(&m, 0, sizeof(m));
+    memcpy(m.magic, "OCSR", 4);
+    m.version = 1;
+    memcpy(m.client_id, client_id(), 8);
+    m.pin = s_request.pin;
+    m.bitrate_kbps = s_request.bitrate_kbps;
+    m.flags = s_request.audio ? 1 : 0;
+    memcpy(m.name, s_request.name, sizeof(m.name));
+    send_to_host(s_video_sock, &m, sizeof(m));
+}
+
+/** Handles a control reply from the PC, which arrives on the video socket. */
+static void handle_reply(const u8 *data, size_t size, u32 from)
+{
+    if (!s_has_request || from != s_request.host_addr || size < 8 || data[4] != 1)
+        return;
+    if (memcmp(data, "OCSA", 4) == 0) {
+        s_state = SESSION_ACTIVE;
+    } else if (memcmp(data, "OCPN", 4) == 0) {
+        if (s_state != SESSION_ACTIVE)
+            s_state = SESSION_PAIRING;
+    } else if (memcmp(data, "OCSD", 4) == 0) {
+        s_deny_reason = data[5];
+        s_state = SESSION_DENIED;
+    }
+}
+
+/** Repeats the messages that have no answer yet. Called every input tick. */
+static void session_tick(u64 now)
+{
+    if (!s_has_request)
+        return;
+    const u64 interval = (u64)(REQUEST_INTERVAL_MS * CPU_TICKS_PER_MSEC);
+    if ((s_state == SESSION_REQUESTING || s_state == SESSION_PAIRING) && now >= s_next_request) {
+        send_session_request();
+        s_next_request = now + interval;
+    }
+    // Until audio flows, keep telling the PC where to send it.
+    if (s_state == SESSION_ACTIVE && s_audio_sock >= 0 && s_request.audio && g_audio_stats.packets == 0 &&
+        now >= s_next_punch) {
+        send_client_msg(s_audio_sock, "OCAP");
+        s_next_punch = now + interval;
+    }
+}
 
 static u8 *on_frame_begin(void *user, size_t *cap)
 {
@@ -82,6 +185,11 @@ static void read_video(void)
             else
                 g_net_stats.error = errno;
             return;
+        }
+        // Control replies from the PC share this socket; video datagrams start with 0x47.
+        if (got >= 4 && buf[0] == 'O' && buf[1] == 'C') {
+            handle_reply(buf, (size_t)got, sender.sin_addr.s_addr);
+            continue;
         }
         // Button state goes back to whoever is sending the video.
         input_set_target(sender.sin_addr.s_addr);
@@ -141,6 +249,7 @@ static void net_thread(void *arg)
         if (now >= next_tick) {
             input_tick();
             audio_tick();
+            session_tick(now);
             next_tick += period;
             if (next_tick <= now) {
                 g_net_stats.late_ticks++;
@@ -175,7 +284,7 @@ static void net_thread(void *arg)
     }
 }
 
-bool net_start(s32 prio, RcvBufInfo *rcvbuf)
+bool net_start(s32 prio, RcvBufInfo *rcvbuf, const SessionRequest *request)
 {
     memset(&g_net_stats, 0, sizeof(g_net_stats));
     memset(rcvbuf, 0, sizeof(*rcvbuf));
@@ -198,6 +307,16 @@ bool net_start(s32 prio, RcvBufInfo *rcvbuf)
     s_input_sock = input_open();
     if (s_input_sock < 0)
         goto fail;
+
+    s_has_request = request != NULL;
+    s_state = SESSION_NONE;
+    s_deny_reason = 0;
+    if (request) {
+        s_request = *request;
+        s_state = SESSION_REQUESTING;
+        s_next_request = s_next_punch = 0;
+        input_set_target(request->host_addr);
+    }
 
     // Audio is optional: without the DSP firmware the stream works silently.
     if (audio_available()) {
@@ -242,6 +361,12 @@ void net_stop(void)
         threadFree(s_thread);
         s_thread = NULL;
     }
+    // Tell the PC to stop streaming; sent twice in case one is lost.
+    if (s_has_request && s_video_sock >= 0) {
+        send_client_msg(s_video_sock, "OCSE");
+        send_client_msg(s_video_sock, "OCSE");
+    }
+    s_has_request = false;
     input_close();
     s_input_sock = -1;
     if (s_audio_sock >= 0) {
@@ -253,6 +378,16 @@ void net_stop(void)
         close(s_video_sock);
         s_video_sock = -1;
     }
+}
+
+SessionState net_session_state(void)
+{
+    return s_state;
+}
+
+u8 net_session_deny_reason(void)
+{
+    return s_deny_reason;
 }
 
 bool net_audio_enabled(void)

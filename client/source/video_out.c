@@ -8,6 +8,7 @@
 #define BYTES_PER_PIXEL 2
 
 static C3D_RenderTarget *s_top;
+static C2D_TextBuf s_text_buf;
 static C3D_Tex s_tex[2];
 static int s_back;
 static Handle s_y2r_event;
@@ -26,9 +27,11 @@ static const Tex3DS_SubTexture s_subtex = {
 
 bool vo_init(void)
 {
-    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE) || !C2D_Init(16))
+    // Every glyph of the status screens is one citro2d object, hence the default size.
+    if (!C3D_Init(C3D_DEFAULT_CMDBUF_SIZE) || !C2D_Init(C2D_DEFAULT_MAX_OBJECTS))
         return false;
     C2D_Prepare();
+    s_text_buf = C2D_TextBufNew(1024);
 
     s_top = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
     if (!s_top)
@@ -74,6 +77,7 @@ void vo_exit(void)
     y2rExit();
     C3D_TexDelete(&s_tex[0]);
     C3D_TexDelete(&s_tex[1]);
+    C2D_TextBufDelete(s_text_buf);
     C2D_Fini();
     C3D_Fini();
 }
@@ -82,6 +86,37 @@ void vo_clear(void)
 {
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     C2D_TargetClear(s_top, C2D_Color32(0, 0, 0, 255));
+    C3D_FrameEnd(0);
+}
+
+/** Draws one centered line of text with the system font. */
+static void draw_centered(const char *str, float y, float scale, u32 color)
+{
+    if (!str || !*str)
+        return;
+    C2D_Text text;
+    C2D_TextParse(&text, s_text_buf, str);
+    C2D_TextOptimize(&text);
+    C2D_DrawText(&text, C2D_AlignCenter | C2D_WithColor, VO_WIDTH / 2.0f, y, 0.5f, scale, scale, color);
+}
+
+void vo_show_status(const char *title, const char *detail, const char *hint)
+{
+    const u32 background = C2D_Color32(0x1f, 0x1d, 0x4f, 0xff);
+    const u32 band = C2D_Color32(0x3b, 0x2f, 0x8f, 0xff);
+    const u32 white = C2D_Color32(0xf4, 0xf2, 0xff, 0xff);
+    const u32 accent = C2D_Color32(0xff, 0x7a, 0x6b, 0xff);
+    const u32 muted = C2D_Color32(0xa9, 0xa4, 0xd6, 0xff);
+
+    C2D_TextBufClear(s_text_buf);
+    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    C2D_TargetClear(s_top, background);
+    C2D_SceneBegin(s_top);
+    C2D_DrawRectSolid(0, 0, 0.1f, VO_WIDTH, 36, band);
+    draw_centered("OldCast", 6, 0.75f, white);
+    draw_centered(title, 78, 0.9f, white);
+    draw_centered(detail, 122, 0.65f, accent);
+    draw_centered(hint, 200, 0.5f, muted);
     C3D_FrameEnd(0);
 }
 

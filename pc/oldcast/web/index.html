@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OldCast</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #14132b; --panel: #1e1c3f; --panel-2: #262352; --line: #34306a;
+    --text: #f1efff; --muted: #a9a4d6; --accent: #ff7a6b; --accent-2: #8b7cff;
+    --ok: #4fd18b; --warn: #ffc65c; --danger: #ff5f6d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f3fb; --panel: #ffffff; --panel-2: #f0eefb; --line: #dcd8f2;
+      --text: #1c1a3a; --muted: #625d8f; --accent: #e85a4a; --accent-2: #5a48e0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  header img { width: 44px; height: 44px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: .2px; }
+  header .host { color: var(--muted); font-size: 13px; }
+  .pill { margin-left: auto; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+    background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+  .pill.live { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+  .pill.pair { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px; margin-bottom: 14px; }
+  h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
+  .hero { display: flex; gap: 18px; align-items: center; }
+  .hero .big { font-size: 20px; font-weight: 600; }
+  .hero p { margin: 4px 0 0; color: var(--muted); }
+  .pin { font: 700 44px/1 Consolas, monospace; letter-spacing: 10px; color: var(--warn); margin: 10px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 14px; }
+  .stat { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 9px 16px; cursor: pointer;
+    background: var(--panel-2); color: var(--text); }
+  button.primary { background: var(--accent); color: #fff; }
+  button.danger { background: color-mix(in srgb, var(--danger) 85%, black); color: #fff; }
+  button:hover { filter: brightness(1.1); }
+  .row { display: grid; grid-template-columns: 180px 1fr auto; gap: 12px; align-items: center; padding: 8px 0;
+    border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; }
+  .row label { color: var(--muted); }
+  .row .val { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+  input[type=text], select { font: inherit; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; width: 100%; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+  .device { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .device:first-of-type { border-top: 0; }
+  .device .meta { color: var(--muted); font-size: 13px; }
+  .device button { margin-left: auto; padding: 6px 12px; font-size: 13px; }
+  .empty { color: var(--muted); }
+  details summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+  pre { margin: 10px 0 0; max-height: 220px; overflow: auto; font: 12px/1.5 Consolas, monospace;
+    color: var(--muted); white-space: pre-wrap; }
+  .warn { color: var(--warn); }
+  @media (max-width: 520px) {
+    .row { grid-template-columns: 1fr auto; }
+    .row label { grid-column: 1 / -1; }
+    .hero { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.svg" alt="">
+    <div>
+      <h1>OldCast</h1>
+      <div class="host" id="host">Starting…</div>
+    </div>
+    <span class="pill" id="pill">Idle</span>
+  </header>
+
+  <section id="status"></section>
+
+  <section>
+    <h2>Settings</h2>
+    <div class="row"><label for="name">PC name shown on the 3DS</label>
+      <input type="text" id="name" maxlength="31"><span></span></div>
+    <div class="row"><label for="bitrate">Video quality</label>
+      <select id="bitrate">
+        <option value="1500">Lower (1.5 Mbps), for weak Wi-Fi</option>
+        <option value="2000">Balanced (2 Mbps)</option>
+        <option value="2500">Higher (2.5 Mbps)</option>
+        <option value="3000">Highest (3 Mbps)</option>
+      </select><span></span></div>
+    <div class="row"><label for="monitor">Monitor to stream</label>
+      <select id="monitor">
+        <option value="0">Main monitor</option><option value="1">Monitor 2</option>
+        <option value="2">Monitor 3</option><option value="3">Monitor 4</option>
+      </select><span></span></div>
+    <div class="row"><label for="audio">Send the PC sound</label>
+      <span><input type="checkbox" id="audio"></span><span></span></div>
+    <div class="row"><label for="radius">Camera: drag for full speed</label>
+      <input type="range" id="radius" min="40" max="160" step="5"><span class="val" id="radius-v"></span></div>
+    <div class="row"><label for="curve">Camera: precision near center</label>
+      <input type="range" id="curve" min="1" max="3" step="0.1"><span class="val" id="curve-v"></span></div>
+    <p class="empty" style="margin:10px 0 0;font-size:13px">Quality and monitor apply from the next session.</p>
+  </section>
+
+  <section>
+    <h2>Paired consoles</h2>
+    <div id="paired"></div>
+  </section>
+
+  <section>
+    <details><summary>Activity</summary><pre id="log"></pre></details>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;
+let editing = false;   // do not overwrite a field while the user is changing it
+
+async function post(path, body = {}) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(body) });
+  state = await r.json();
+  render();
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  return m ? `${m} min ${s % 60} s` : `${s} s`;
+}
+
+function esc(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;",
+                                                    '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderStatus() {
+  const pill = $("pill");
+  const s = state.session, p = state.pending;
+  if (p) {
+    pill.textContent = "Pairing"; pill.className = "pill pair";
+    $("status").innerHTML = `
+      <h2>New console</h2>
+      <div class="big"><strong>${esc(p.name || "A 3DS")}</strong> (${esc(p.address)}) wants to connect.</div>
+      <p class="empty">Allow it only if your 3DS shows this same PIN:</p>
+      <div class="pin">${String(p.pin).padStart(4, "0")}</div>
+      <div class="actions">
+        <button class="primary" onclick="post('/api/pairing', {approve: true})">Allow</button>
+        <button onclick="post('/api/pairing', {approve: false})">Reject</button>
+      </div>`;
+    return;
+  }
+  if (s) {
+    pill.textContent = "Streaming"; pill.className = "pill live";
+    const input = s.input_age_ms == null ? "waiting" : (s.input_age_ms < 500 ? "live" : `${s.input_age_ms} ms ago`);
+    $("status").innerHTML = `
+      <div class="hero"><div>
+        <div class="big">Streaming to ${esc(s.name || "your 3DS")}</div>
+        <p>${esc(s.address)} · ${fmtTime(s.seconds)}</p>
+      </div></div>
+      <div class="grid">
+        <div class="stat"><div class="k">Video</div><div class="v">${(s.bitrate_kbps / 1000).toFixed(1)} Mbps</div></div>
+        <div class="stat"><div class="k">Controls</div><div class="v">${input}</div></div>
+        <div class="stat"><div class="k">Round trip</div><div class="v">${s.rtt_ms ? s.rtt_ms + " ms" : "–"}</div></div>
+        <div class="stat"><div class="k">Sound</div><div class="v">${s.audio ? "on" : "off"}</div></div>
+      </div>
+      <div class="actions"><button class="danger" onclick="post('/api/stop')">Stop streaming</button></div>`;
+    return;
+  }
+  pill.textContent = "Ready"; pill.className = "pill";
+  const ffmpeg = state.host.ffmpeg ? "" :
+    `<p class="warn">ffmpeg was not found. Install it and add it to the PATH to stream video.</p>`;
+  $("status").innerHTML = `
+    <div class="hero"><div>
+      <div class="big">Waiting for your 3DS</div>
+      <p>Open OldCast on the 3DS and choose <strong>${esc(state.host.name)}</strong> from the list.</p>
+      ${ffmpeg}
+    </div></div>`;
+}
+
+function renderSettings() {
+  if (editing) return;
+  const st = state.settings;
+  $("name").value = st.name;
+  $("bitrate").value = String(st.bitrate_kbps);
+  $("monitor").value = String(st.monitor);
+  $("audio").checked = st.audio;
+  $("radius").value = st.touch_radius;
+  $("curve").value = st.touch_curve;
+  $("radius-v").textContent = `${st.touch_radius} px`;
+  $("curve-v").textContent = Number(st.touch_curve).toFixed(1);
+}
+
+function renderPaired() {
+  const list = state.paired;
+  $("paired").innerHTML = list.length ? list.map((d) => `
+    <div class="device">
+      <div><div>${esc(d.name || "3DS")}</div><div class="meta">paired ${esc(d.since || "")}</div></div>
+      <button onclick="post('/api/unpair', {id: '${esc(d.id)}'})">Remove</button>
+    </div>`).join("") : `<div class="empty">None yet. The first time a 3DS connects, you will be asked to allow it here.</div>`;
+}
+
+function render() {
+  if (!state) return;
+  $("host").textContent = `${state.host.name} · waiting on the local network`;
+  renderStatus();
+  renderSettings();
+  renderPaired();
+  $("log").textContent = state.log.join("\n");
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state");
+    state = await r.json();
+    render();
+  } catch (e) {
+    $("pill").textContent = "Host stopped"; $("pill").className = "pill";
+  }
+  setTimeout(poll, 500);
+}
+
+// Settings: send each change right away.
+for (const id of ["name", "bitrate", "monitor", "audio", "radius", "curve"]) {
+  const el = $(id);
+  el.addEventListener("focus", () => (editing = true));
+  el.addEventListener("blur", () => (editing = false));
+  el.addEventListener("input", () => {
+    if (id === "radius") $("radius-v").textContent = `${el.value} px`;
+    if (id === "curve") $("curve-v").textContent = Number(el.value).toFixed(1);
+  });
+  el.addEventListener("change", () => {
+    const key = { bitrate: "bitrate_kbps", radius: "touch_radius", curve: "touch_curve" }[id] || id;
+    const value = id === "audio" ? el.checked : (id === "name" ? el.value : Number(el.value));
+    post("/api/settings", { [key]: value });
+  });
+}
+
+poll();
+</script>
+</body>
+</html>

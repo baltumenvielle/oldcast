@@ -16,7 +16,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from gamepad import touch_stick, video_latency_ms  # noqa: E402
+from oldcast.gamepad import touch_stick, video_latency_ms  # noqa: E402
 
 PACKET = struct.Struct("<4sBBHIhhHHI")
 PACKET_V2 = struct.Struct("<4sBBHIhhHHIHHHBB")

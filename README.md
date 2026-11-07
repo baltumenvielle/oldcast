@@ -13,8 +13,9 @@ WASAPI audio capture and a virtual Xbox 360 controller.
 5-minute game session: 30 fps shown, 2 damaged frames, no lost audio or button packets.
 Video takes 106 ms from the PC clock to the 3DS (measured automatically, 81 ms of it on the
 PC), button packets make the round trip in under 10 ms, and audio plays about 50 ms after
-it is captured. Next steps: a connection started from the 3DS with a user interface on both
-sides, then play from outside the home network. See [docs/design.md](docs/design.md) for the
+it is captured. The 3DS finds the PC on its own, pairs with a PIN the first time, and the
+PC has its own window. Next steps: install as a CIA with a HOME menu icon, a graphical
+interface on the 3DS, then play from outside the home network. See [docs/design.md](docs/design.md) for the
 measurements and the reasoning behind each choice.
 
 ## How it works
@@ -31,8 +32,10 @@ virtual Xbox 360 pad ◄─ gamepad.py ◄─ UDP 5005 ◄────── but
 ```
 
 - `client/`: the 3DS application (C, libctru, citro2d, libavcodec).
-- `pc/`: PowerShell scripts around ffmpeg, the Python audio sender and the Python virtual
-  gamepad (ViGEm).
+- `pc/oldcast/`: the PC host (Python): discovery and sessions, ffmpeg, audio, the virtual
+  gamepad (ViGEm) and a local web interface shown in its own window.
+- `pc/*.ps1`, `pc/tools/`: measurement scripts that drive the client directly.
+- `docs/protocol.md`: discovery, pairing and session messages.
 
 ## Requirements
 
@@ -65,18 +68,24 @@ pc/.venv/Scripts/python.exe -m pip install -r pc/requirements.txt
 
 ## Play
 
-1. On the 3DS, open the Homebrew Launcher and press **Y** (NetLoader).
-2. On the PC, with the game in the foreground on the main monitor:
+1. On the PC, start the host. Its window shows the connection, the settings and the paired
+   consoles:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File pc\play.ps1 -Ip 192.168.0.149
+cd pc
+.venv\Scripts\python.exe -m oldcast
 ```
 
-`play.ps1` sends the client with `3dslink`, starts the virtual gamepad and streams the
-screen and the sound (`-NoAudio` keeps the sound on the PC). Hold **SELECT+START** for one
-second on the 3DS to stop. Alternatively, copy
-`oldcast.3dsx` to `/3ds/` on the SD card, start it from the Homebrew Launcher, press
-**A**, and run `play.ps1 -NoLink`.
+2. On the 3DS, start OldCast (copy `oldcast.3dsx` to `/3ds/` on the SD card and open it
+   from the Homebrew Launcher). It lists the PCs running the host; choose one with **A**.
+3. The first time, the 3DS shows a PIN and the PC window asks to allow it. Check that the
+   PIN matches and click **Allow**.
+4. Bring the game to the foreground on the streamed monitor and play. Hold **SELECT+START**
+   for one second on the 3DS to stop.
+
+`pc\play.ps1 -Ip <3ds-ip>` still works for development: it sends the client with `3dslink`
+and pushes video and audio without a session (press **X** on the client's home screen to
+listen).
 
 ### Controls
 
@@ -119,6 +128,7 @@ gcc -std=c11 -Wall -Iclient/source client/test/test_probe.c client/source/latenc
 gcc -std=c11 -Wall -Iclient/source client/test/test_adpcm.c client/source/adpcm.c -o test_adpcm
 pc/.venv/Scripts/python.exe pc/tests/test_audio.py test_adpcm.exe
 pc/.venv/Scripts/python.exe pc/tests/test_gamepad.py   # with pc/gamepad.py --radius 40 --curve 1 running
+pc/.venv/Scripts/python.exe pc/tests/test_host.py      # with "python -m oldcast --no-window" running
 ```
 
 ## Credits
