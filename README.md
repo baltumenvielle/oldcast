@@ -94,7 +94,10 @@ to the PC by hand. Pair the 3DS at home once: it then keeps a key and the PC's p
 address, and on any other network the PC appears in its list as "remote". Pairing is only
 possible on the local network, and the PC ignores anything from outside that is not signed
 with a paired console's key. This does not work if the internet provider of the PC uses
-CGNAT (no public address of its own).
+CGNAT (no public address of its own). The PC must stay awake with the host open.
+
+The host keeps a log in `%APPDATA%\OldCast\host.log`, including the requests it ignores and
+why, which helps when a connection from outside fails.
 
 `pc\play.ps1 -Ip <3ds-ip>` still works for development: it sends the client with `3dslink`
 and pushes video and audio without a session (press **X** on the client's home screen to

@@ -34,6 +34,9 @@ RESTART_LIMIT = 8        # restarts allowed within RESTART_WINDOW_S
 RESTART_WINDOW_S = 60.0
 RESTART_DELAYS_S = (0.5, 1.0, 2.0, 4.0)  # wait before the 1st, 2nd, 3rd and later restarts
 
+LOG_MAX_BYTES = 1 << 20   # host.log is renamed to host.log.1 past this size
+REJECT_LOG_S = 60.0       # log ignored requests from the same address at most this often
+
 DEFAULT_SETTINGS = {
     "name": socket.gethostname(),
     "bitrate_kbps": 2000,
@@ -97,6 +100,8 @@ class Host:
                                stats=lambda line: setattr(self, "input_stats", line))
         self.gamepad.allowed_ip = ""  # no session: the controller ignores every packet
         self.router = PortMapper(protocol.CONTROL_PORT, report=self.report)
+        self.log_path = os.path.join(config_dir(), "host.log")
+        self.rejected = {}  # address -> time it was last logged
 
     # --- lifecycle ---------------------------------------------------------------------
 
@@ -113,6 +118,23 @@ class Host:
         with self.lock:  # several threads report; keep their lines whole
             self.log.append(line)
             print(line, flush=True)
+            self._write_log(f"{time.strftime('%Y-%m-%d')} {line}")
+
+    def _write_log(self, line):
+        """Keeps a log on disk, so problems can be looked at after the fact."""
+        try:
+            if os.path.exists(self.log_path) and os.path.getsize(self.log_path) > LOG_MAX_BYTES:
+                os.replace(self.log_path, self.log_path + ".1")
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+    def _log_rejected(self, address, reason):
+        now = time.monotonic()
+        if now - self.rejected.get(address[0], -REJECT_LOG_S) >= REJECT_LOG_S:
+            self.rejected[address[0]] = now
+            self.report(f"Ignored a session request from {address[0]}: {reason}")
 
     def _send(self, data, address):
         """Sends from the host port. Used by the video relay and the audio sender too."""
@@ -227,9 +249,12 @@ class Host:
                 # signature at home usually means the PC forgot this 3DS: tell it to pair again.
                 if verdict == "bad" and local:
                     self._reply(b"OCSD", address, protocol.DENIED_BAD_KEY)
+                self._log_rejected(address, "replayed request" if verdict == "replay"
+                                   else "unknown console or wrong key")
                 return
         elif not local:
             self._reply(b"OCSD", address, protocol.DENIED_PAIR_AT_HOME)
+            self._log_rejected(address, "unsigned request from outside (pair at home first)")
             return
         signed = signature is not None
 
