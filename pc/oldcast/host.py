@@ -19,10 +19,12 @@ from collections import deque
 from . import protocol, siphash
 from .audio import AudioSender
 from .gamepad import Gamepad
+from .rate import RateControl
 from .upnp import PortMapper
 from .video import VideoSender
 
 SESSION_TIMEOUT_S = 3.0  # no input packets for this long ends the session
+REMOTE_START_KBPS = 1000  # sessions from outside start here and climb if the connection allows
 REMOTE_TIMEOUT_S = 15.0  # the same from outside the home network, where Wi-Fi and mobile links drop
                          # for seconds and the 3DS asks for the session again once they come back
 STARTUP_GRACE_S = 6.0    # the 3DS needs a moment to start sending input after OCSA
@@ -42,7 +44,8 @@ REJECT_LOG_S = 60.0       # log ignored requests from the same address at most t
 DEFAULT_SETTINGS = {
     "name": socket.gethostname(),
     "bitrate_kbps": 2000,
-    "remote_bitrate_kbps": 1000,  # sessions from outside: home connections and Wi-Fi vary a lot
+    "remote_bitrate_kbps": 2000,  # highest for sessions from outside, which vary a lot
+    "auto_quality": True,         # fit the bitrate to the connection (rate.py)
     "monitor": 0,
     "audio": True,
     "touch_radius": 90.0,
@@ -86,6 +89,7 @@ class Host:
         self.pending = None   # pairing request waiting for the user: dict
         self.denied = {}      # client id hex -> time of the rejection
         self.session = None   # active session: dict
+        self.rate = None      # automatic quality of the active session, if enabled
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # Video bursts go out through this socket; a large send buffer avoids WSAENOBUFS.
@@ -293,7 +297,14 @@ class Host:
     def _start_session(self, client, fields, address, signed):
         settings = self.settings.data
         remote = not protocol.is_local(address[0])
-        bitrate = fields["bitrate_kbps"] or settings["remote_bitrate_kbps" if remote else "bitrate_kbps"]
+        requested = fields["bitrate_kbps"]
+        bitrate = requested or settings["remote_bitrate_kbps" if remote else "bitrate_kbps"]
+        # A bitrate the 3DS asks for (tests) stays fixed; otherwise the setting is the highest.
+        self.rate = None
+        if settings["auto_quality"] and not requested:
+            start = min(bitrate, REMOTE_START_KBPS) if remote else bitrate
+            self.rate = RateControl(bitrate, start, time.monotonic())
+            bitrate = self.rate.kbps
         key = bytes.fromhex(self.paired.data[client]["key"]) if signed else None
         self.session = {"client": client, "name": fields["name"], "video": address, "audio": None,
                         "started": time.monotonic(), "bitrate_kbps": bitrate, "restarts": [],
@@ -302,6 +313,7 @@ class Host:
         self.paired.save()
         self.gamepad.allowed_ip = address[0]
         self.gamepad.last_packet = None
+        self.gamepad.rtt_ms = 0  # the last session's value would skew the automatic quality
         self.video.start(address, bitrate, settings["monitor"])
         if settings["audio"] and fields["audio"]:
             self.audio.start()
@@ -340,6 +352,14 @@ class Host:
                 elif now >= session["retry_at"]:
                     session["retry_at"] = None
                     self.video.start(session["video"], session["bitrate_kbps"], self.settings.data["monitor"])
+            elif self.rate:
+                rtt = self.gamepad.rtt_ms
+                kbps = self.rate.update(rtt, last, now)
+                if kbps:
+                    change = "lowered" if kbps < self.session["bitrate_kbps"] else "raised"
+                    self.report(f"Video quality {change} to {kbps} kbps (round trip {rtt} ms)")
+                    self.session["bitrate_kbps"] = kbps
+                    self.video.start(self.session["video"], kbps, self.settings.data["monitor"])
 
     # --- actions from the user interface -------------------------------------------------
 
@@ -409,6 +429,7 @@ class Host:
                     "address": self.session["video"][0],
                     "seconds": round(now - self.session["started"]),
                     "bitrate_kbps": self.session["bitrate_kbps"],
+                    "auto_quality": self.rate is not None,
                     "audio": self.session["audio"] is not None and self.audio.running,
                     "audio_packets": self.audio.packets,
                     "input_age_ms": None if last is None else round((now - last) * 1000),

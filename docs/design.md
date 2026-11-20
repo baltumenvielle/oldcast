@@ -156,6 +156,25 @@ was fluid, the session was signed end to end, but audio stopped after a while an
 came back. Mobile carriers drop UDP mappings that only receive; the 3DS now sends a small
 keepalive from both sockets every 5 seconds, and the PC follows any change of port.
 
+### Automatic quality
+
+A test from another home, over a weak Wi-Fi, showed what happens when the connection carries
+less than the stream: at 2 Mbps (about 2.4 with audio) the round trip of the input packets
+grew from 30 ms to 12 seconds in half a minute, as packets piled up in a queue on the way,
+until input stopped arriving and the session ended. At 1 Mbps the same connection held a
+30 ms round trip for over a minute.
+
+The 3DS already reports that round trip in every input packet (the PC echoes each one), so
+`pc/oldcast/rate.py` uses it to fit the bitrate. It steps down when the round trip stays
+250 ms above the lowest seen in the session for a second, or when no input arrives for a
+second; waits 4 seconds for the queue to drain before judging again; and steps up after 15
+calm seconds, doubling that wait (up to 2 minutes) when a step up brings congestion back.
+Steps are 0.5, 0.7, 1, 1.5, 2, 2.5 and 3 Mbps, capped by the quality setting. Sessions from
+outside start at 1 Mbps. Each change restarts ffmpeg, a fraction of a second of video.
+
+One gap: if the echoes are lost rather than late, the 3DS keeps reporting the last round trip
+it measured. Silence on the input side covers the worst cases.
+
 ## Audio
 
 **Capture:** `pc/audio.py` records what Windows is playing with WASAPI loopback, at the mix

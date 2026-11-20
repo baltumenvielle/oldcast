@@ -95,9 +95,10 @@ address, and on any other network the PC appears in its list as "remote". Pairin
 possible on the local network, and the PC ignores anything from outside that is not signed
 with a paired console's key. This does not work if the internet provider of the PC uses
 CGNAT (no public address of its own). The PC must stay awake with the host open.
-Sessions from outside use their own video quality (1 Mbps by default, set in the host
-window), since home connections and Wi-Fi away from home vary a lot, and survive up to 15
-seconds without contact.
+Sessions from outside have their own highest video quality, set in the host window. They
+start at 1 Mbps and the host adjusts the quality to what the connection carries, watching
+the round trip the 3DS reports (see `docs/design.md`). They also survive up to 15 seconds
+without contact, since Wi-Fi away from home can drop for a few seconds.
 
 The host keeps a log in `%APPDATA%\OldCast\host.log`, including the requests it ignores and
 why, which helps when a connection from outside fails.
@@ -147,6 +148,7 @@ gcc -std=c11 -Wall -Iclient/source client/test/test_probe.c client/source/latenc
 gcc -std=c11 -Wall -Iclient/source client/test/test_adpcm.c client/source/adpcm.c -o test_adpcm
 gcc -std=c11 -Wall -Iclient/source client/test/test_siphash.c client/source/siphash.c -o test_siphash
 pc/.venv/Scripts/python.exe pc/tests/test_audio.py test_adpcm.exe
+pc/.venv/Scripts/python.exe pc/tests/test_rate.py
 pc/.venv/Scripts/python.exe pc/tests/test_gamepad.py   # with pc/gamepad.py --radius 40 --curve 1 running
 pc/.venv/Scripts/python.exe pc/tests/test_host.py      # with "python -m oldcast --no-window" running
 ```

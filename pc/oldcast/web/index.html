@@ -102,13 +102,15 @@
         <option value="2500">Higher (2.5 Mbps)</option>
         <option value="3000">Highest (3 Mbps)</option>
       </select><span></span></div>
-    <div class="row"><label for="remote-bitrate">Video quality from outside home</label>
+    <div class="row"><label for="remote-bitrate">Highest video quality from outside home</label>
       <select id="remote-bitrate">
         <option value="700">Lowest (0.7 Mbps), for very weak connections</option>
         <option value="1000">Lower (1 Mbps)</option>
         <option value="1500">Balanced (1.5 Mbps)</option>
         <option value="2000">Same as home (2 Mbps)</option>
       </select><span></span></div>
+    <div class="row"><label for="auto">Lower the quality when the connection can't keep up</label>
+      <span><input type="checkbox" id="auto"></span><span></span></div>
     <div class="row"><label for="monitor">Monitor to stream</label>
       <select id="monitor">
         <option value="0">Main monitor</option><option value="1">Monitor 2</option>
@@ -181,7 +183,7 @@ function renderStatus() {
         <p>${esc(s.address)} (${where}) · ${fmtTime(s.seconds)}</p>
       </div></div>
       <div class="grid">
-        <div class="stat"><div class="k">Video</div><div class="v">${(s.bitrate_kbps / 1000).toFixed(1)} Mbps</div></div>
+        <div class="stat"><div class="k">Video</div><div class="v">${(s.bitrate_kbps / 1000).toFixed(1)} Mbps${s.auto_quality ? " (auto)" : ""}</div></div>
         <div class="stat"><div class="k">Controls</div><div class="v">${input}</div></div>
         <div class="stat"><div class="k">Round trip</div><div class="v">${s.rtt_ms ? s.rtt_ms + " ms" : "–"}</div></div>
         <div class="stat"><div class="k">Sound</div><div class="v">${s.audio ? "on" : "off"}</div></div>
@@ -226,6 +228,7 @@ function renderSettings() {
   $("remote-bitrate").value = String(st.remote_bitrate_kbps);
   $("monitor").value = String(st.monitor);
   $("audio").checked = st.audio;
+  $("auto").checked = st.auto_quality;
   $("radius").value = st.touch_radius;
   $("curve").value = st.touch_curve;
   $("radius-v").textContent = `${st.touch_radius} px`;
@@ -263,7 +266,7 @@ async function poll() {
 }
 
 // Settings: send each change right away.
-for (const id of ["name", "bitrate", "remote-bitrate", "monitor", "audio", "radius", "curve", "remote"]) {
+for (const id of ["name", "bitrate", "remote-bitrate", "monitor", "audio", "auto", "radius", "curve", "remote"]) {
   const el = $(id);
   el.addEventListener("focus", () => (editing = true));
   el.addEventListener("blur", () => (editing = false));
@@ -273,8 +276,8 @@ for (const id of ["name", "bitrate", "remote-bitrate", "monitor", "audio", "radi
   });
   el.addEventListener("change", () => {
     const key = { bitrate: "bitrate_kbps", "remote-bitrate": "remote_bitrate_kbps", radius: "touch_radius", curve: "touch_curve",
-                  remote: "remote_play" }[id] || id;
-    const value = (id === "audio" || id === "remote") ? el.checked : (id === "name" ? el.value : Number(el.value));
+                  remote: "remote_play", auto: "auto_quality" }[id] || id;
+    const value = (id === "audio" || id === "remote" || id === "auto") ? el.checked : (id === "name" ? el.value : Number(el.value));
     post("/api/settings", { [key]: value });
   });
 }
