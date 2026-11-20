@@ -95,6 +95,9 @@ address, and on any other network the PC appears in its list as "remote". Pairin
 possible on the local network, and the PC ignores anything from outside that is not signed
 with a paired console's key. This does not work if the internet provider of the PC uses
 CGNAT (no public address of its own). The PC must stay awake with the host open.
+Sessions from outside use their own video quality (1 Mbps by default, set in the host
+window), since home connections and Wi-Fi away from home vary a lot, and survive up to 15
+seconds without contact.
 
 The host keeps a log in `%APPDATA%\OldCast\host.log`, including the requests it ignores and
 why, which helps when a connection from outside fails.

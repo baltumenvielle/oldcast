@@ -23,6 +23,8 @@ from .upnp import PortMapper
 from .video import VideoSender
 
 SESSION_TIMEOUT_S = 3.0  # no input packets for this long ends the session
+REMOTE_TIMEOUT_S = 15.0  # the same from outside the home network, where Wi-Fi and mobile links drop
+                         # for seconds and the 3DS asks for the session again once they come back
 STARTUP_GRACE_S = 6.0    # the 3DS needs a moment to start sending input after OCSA
 DENY_MEMORY_S = 30.0     # a rejected 3DS is answered OCSD for this long
 # ffmpeg stops when Windows takes the screen capture away (a game switching to or from full
@@ -40,6 +42,7 @@ REJECT_LOG_S = 60.0       # log ignored requests from the same address at most t
 DEFAULT_SETTINGS = {
     "name": socket.gethostname(),
     "bitrate_kbps": 2000,
+    "remote_bitrate_kbps": 1000,  # sessions from outside: home connections and Wi-Fi vary a lot
     "monitor": 0,
     "audio": True,
     "touch_radius": 90.0,
@@ -289,11 +292,12 @@ class Host:
 
     def _start_session(self, client, fields, address, signed):
         settings = self.settings.data
-        bitrate = fields["bitrate_kbps"] or settings["bitrate_kbps"]
+        remote = not protocol.is_local(address[0])
+        bitrate = fields["bitrate_kbps"] or settings["remote_bitrate_kbps" if remote else "bitrate_kbps"]
         key = bytes.fromhex(self.paired.data[client]["key"]) if signed else None
         self.session = {"client": client, "name": fields["name"], "video": address, "audio": None,
                         "started": time.monotonic(), "bitrate_kbps": bitrate, "restarts": [],
-                        "key": key, "remote": not protocol.is_local(address[0]), "retry_at": None}
+                        "key": key, "remote": remote, "retry_at": None}
         self.paired.data[client]["name"] = fields["name"]
         self.paired.save()
         self.gamepad.allowed_ip = address[0]
@@ -317,8 +321,9 @@ class Host:
                 return
             now = time.monotonic()
             last = self.gamepad.last_packet
-            if now - self.session["started"] > STARTUP_GRACE_S and (last is None or now - last > SESSION_TIMEOUT_S):
-                self.stop_session("no input from the 3DS for 3 seconds")
+            timeout = REMOTE_TIMEOUT_S if self.session["remote"] else SESSION_TIMEOUT_S
+            if now - self.session["started"] > STARTUP_GRACE_S and (last is None or now - last > timeout):
+                self.stop_session(f"no input from the 3DS for {timeout:.0f} seconds")
             elif not self.video.running():
                 session = self.session
                 if session["retry_at"] is None:

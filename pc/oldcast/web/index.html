@@ -102,6 +102,13 @@
         <option value="2500">Higher (2.5 Mbps)</option>
         <option value="3000">Highest (3 Mbps)</option>
       </select><span></span></div>
+    <div class="row"><label for="remote-bitrate">Video quality from outside home</label>
+      <select id="remote-bitrate">
+        <option value="700">Lowest (0.7 Mbps), for very weak connections</option>
+        <option value="1000">Lower (1 Mbps)</option>
+        <option value="1500">Balanced (1.5 Mbps)</option>
+        <option value="2000">Same as home (2 Mbps)</option>
+      </select><span></span></div>
     <div class="row"><label for="monitor">Monitor to stream</label>
       <select id="monitor">
         <option value="0">Main monitor</option><option value="1">Monitor 2</option>
@@ -216,6 +223,7 @@ function renderSettings() {
   $("remote").checked = st.remote_play;
   $("name").value = st.name;
   $("bitrate").value = String(st.bitrate_kbps);
+  $("remote-bitrate").value = String(st.remote_bitrate_kbps);
   $("monitor").value = String(st.monitor);
   $("audio").checked = st.audio;
   $("radius").value = st.touch_radius;
@@ -255,7 +263,7 @@ async function poll() {
 }
 
 // Settings: send each change right away.
-for (const id of ["name", "bitrate", "monitor", "audio", "radius", "curve", "remote"]) {
+for (const id of ["name", "bitrate", "remote-bitrate", "monitor", "audio", "radius", "curve", "remote"]) {
   const el = $(id);
   el.addEventListener("focus", () => (editing = true));
   el.addEventListener("blur", () => (editing = false));
@@ -264,7 +272,7 @@ for (const id of ["name", "bitrate", "monitor", "audio", "radius", "curve", "rem
     if (id === "curve") $("curve-v").textContent = Number(el.value).toFixed(1);
   });
   el.addEventListener("change", () => {
-    const key = { bitrate: "bitrate_kbps", radius: "touch_radius", curve: "touch_curve",
+    const key = { bitrate: "bitrate_kbps", "remote-bitrate": "remote_bitrate_kbps", radius: "touch_radius", curve: "touch_curve",
                   remote: "remote_play" }[id] || id;
     const value = (id === "audio" || id === "remote") ? el.checked : (id === "name" ? el.value : Number(el.value));
     post("/api/settings", { [key]: value });

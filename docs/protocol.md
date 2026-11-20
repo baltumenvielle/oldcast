@@ -50,8 +50,9 @@ its list of PCs. Every PC running the host answers directly.
 3. When paired, the PC answers `OCSA` (session accepted) and starts streaming.
 4. The 3DS then sends `OCAP` (audio punch) from its **audio** socket (port 5006). The PC
    sends audio to the address and port it came from.
-5. Input packets (also to port 5007) keep the session alive. If none arrive for 3 seconds, or the
-   3DS sends `OCSE` (session end), the PC stops streaming.
+5. Input packets (also to port 5007) keep the session alive. If none arrive for 3 seconds (15
+   from outside the home network, where links drop for a few seconds), or the 3DS sends
+   `OCSE` (session end), the PC stops streaming.
 
 `OCSR` (session request), 3DS video socket -> PC:
 
